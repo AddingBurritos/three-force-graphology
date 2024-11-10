@@ -28,6 +28,9 @@ import { createBaseThreePhotons, createThreePhotonsGeometry, createThreePhotonsM
 const setAttributeFn = new BufferGeometry().setAttribute ? 'setAttribute' : 'addAttribute';
 const applyMatrix4Fn = new BufferGeometry().applyMatrix4 ? 'applyMatrix4' : 'applyMatrix';
 
+let stats;
+const CAMERA_DISTANCE2NODES_FACTOR = 170;
+
 export default Kapsule({
 
   props: {
@@ -132,7 +135,38 @@ export default Kapsule({
     onUpdate: { default: () => {}, triggerUpdate: false },
     onFinishUpdate: { default: () => {}, triggerUpdate: false },
     onEngineTick: { default: () => {}, triggerUpdate: false },
-    onEngineStop: { default: () => {}, triggerUpdate: false }
+    onEngineStop: { default: () => {}, triggerUpdate: false },
+
+    // NEW BELOW
+    nodeLabel: { default: 'name', triggerUpdate: false },
+    linkLabel: { default: 'name', triggerUpdate: false },
+    linkHoverPrecision: { 
+      default: 1, 
+      onChange: (p, state) => state.renderObjs.lineHoverPrecision(p), 
+      triggerUpdate: false },
+    enableNavigationControls: {
+      default: true,
+      onChange(enable, state) {
+        const controls = state.renderObjs.controls();
+        if (controls) {
+          controls.enabled = enable;
+          // trigger mouseup on re-enable to prevent sticky controls
+          enable && controls.domElement && controls.domElement.dispatchEvent(new PointerEvent('pointerup'));
+        }
+      },
+      triggerUpdate: false
+    },
+    enableNodeDrag: { default: true, triggerUpdate: false },
+    onNodeDrag: { default: () => {}, triggerUpdate: false },
+    onNodeDragEnd: { default: () => {}, triggerUpdate: false },
+    onNodeClick: { triggerUpdate: false },
+    onNodeRightClick: { triggerUpdate: false },
+    onNodeHover: { triggerUpdate: false },
+    onLinkClick: { triggerUpdate: false },
+    onLinkRightClick: { triggerUpdate: false },
+    onLinkHover: { triggerUpdate: false },
+    onBackgroundClick: { triggerUpdate: false },
+    onBackgroundRightClick: { triggerUpdate: false },
   },
 
   methods: {
