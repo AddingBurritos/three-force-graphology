@@ -2,7 +2,6 @@ import resolve from '@rollup/plugin-node-resolve';
 import commonJs from '@rollup/plugin-commonjs';
 import babel from '@rollup/plugin-babel';
 import terser from "@rollup/plugin-terser";
-import dts from 'rollup-plugin-dts';
 import pkg from './package.json' assert { type: 'json' };
 
 const umdConf = {
@@ -48,13 +47,5 @@ export default [
     plugins: [
       babel()
     ]
-  },
-  { // expose TS declarations
-    input: 'src/index.d.ts',
-    output: [{
-      file: `dist/${pkg.name}.d.ts`,
-      format: 'es'
-    }],
-    plugins: [dts()]
   }
 ];

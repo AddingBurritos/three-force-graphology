@@ -10,12 +10,34 @@ const autoColorScale = scaleOrdinal(schemePaired);
 // Autoset attribute colorField by colorByAccessor property
 // If an object has already a color, don't set it
 // Objects can be nodes or links
-function autoColorObjects(objects, colorByAccessor, colorField) {
+function autoColorObjects(attributes, colorByAccessor, colorField) {
   if (!colorByAccessor || typeof colorField !== 'string') return;
 
-  objects.filter(obj => !obj[colorField]).forEach(obj => {
+  attributes.filter(obj => !obj[colorField]).forEach(obj => {
     obj[colorField] = autoColorScale(colorByAccessor(obj));
   });
 }
 
-export { autoColorObjects, colorStr2Hex, colorAlpha };
+function autoColorNodes(graph, colorByAccessor, colorField) {
+  if (!colorByAccessor || typeof colorField !== 'string') return;
+
+  graph.forEachNode( (node, attrs) => {
+    if (attrs[colorField]) return;
+    graph.setNodeAttribute(node, colorField, autoColorScale(colorByAccessor(attrs)));
+  })
+}
+
+function getAutoColor(val) {
+  return autoColorScale(val);
+}
+
+function autoColorEdges(graph, colorByAccessor, colorField) {
+  if (!colorByAccessor || typeof colorField !== 'string') return;
+
+  graph.forEachEdge( (edge, attrs, src, dst, srcAttrs, dstAttrs, isUndirected) => {
+    if (attrs[colorField]) return;
+    graph.setEdgeAttribute(edge, colorField, autoColorScale(colorByAccessor(attrs)));
+  }); 
+}
+
+export { autoColorObjects, colorStr2Hex, colorAlpha, autoColorNodes, autoColorEdges, getAutoColor };
