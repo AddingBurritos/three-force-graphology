@@ -27,12 +27,39 @@ import { emptyObject } from './utils/three-gc.js';
 import { refreshEdge, refreshNode } from './utils/graph-refresh.js';
 import { createBaseThreePhotons, createThreePhotonsGeometry, createThreePhotonsMaterial } from './utils/three-objs.js';
 
+
+import ThreeRenderObjects from 'three-render-objects';
+import { DragControls as ThreeDragControls } from 'three/examples/jsm/controls/DragControls.js';
+import Stats from 'three/addons/libs/stats.module.js';
+import linkKapsule from './utils/kapsule-link.js';
+
 // support multiple method names for backwards threejs compatibility
 const setAttributeFn = new BufferGeometry().setAttribute ? 'setAttribute' : 'addAttribute';
 const applyMatrix4Fn = new BufferGeometry().applyMatrix4 ? 'applyMatrix4' : 'applyMatrix';
 
 let stats;
 const CAMERA_DISTANCE2NODES_FACTOR = 170;
+
+// Expose config from renderObjs
+const bindRenderObjs = linkKapsule('renderObjs', ThreeRenderObjects);
+const linkedRenderObjsProps = Object.assign(...[
+  'width',
+  'height',
+  'backgroundColor',
+  'showNavInfo',
+  'enablePointerInteraction'
+].map(p => ({ [p]: bindRenderObjs.linkProp(p)})));
+const linkedRenderObjsMethods = Object.assign(
+  ...[
+    'lights',
+    'cameraPosition',
+    'postProcessingComposer'
+  ].map(p => ({ [p]: bindRenderObjs.linkMethod(p)})),
+  {
+    graph2ScreenCoords: bindRenderObjs.linkMethod('getScreenCoords'),
+    screen2GraphCoords: bindRenderObjs.linkMethod('getSceneCoords')
+  }
+);
 
 export default Kapsule({
 
@@ -170,6 +197,7 @@ export default Kapsule({
     onLinkHover: { triggerUpdate: false },
     onBackgroundClick: { triggerUpdate: false },
     onBackgroundRightClick: { triggerUpdate: false },
+    ...linkedRenderObjsProps
   },
 
   methods: {
@@ -600,7 +628,50 @@ export default Kapsule({
         state.graph.removeAllListeners(eventName);
       });
       console.log("Number of nodeAdded listeners: ", state.graph.listeners("nodeAdded").length);
-    }
+    },
+    // New Below
+    zoomToFit: function(state, transitionDuration, padding, ...bboxArgs) {
+      state.renderObjs.fitToBbox(
+        this.getGraphBbox(...bboxArgs),
+        transitionDuration,
+        padding
+      );
+      return this;
+    },
+    pauseAnimation: function(state) {
+      if (state.animationFrameRequestId !== null) {
+        cancelAnimationFrame(state.animationFrameRequestId);
+        state.animationFrameRequestId = null;
+      }
+      return this;
+    },
+    resumeAnimation: function(state) {
+      if (state.animationFrameRequestId === null) {
+        this._animationCycle();
+      }
+      return this;
+    },
+    _animationCycle(state) {
+      stats.update();
+      if (state.enablePointerInteraction) {
+        // reset canvas cursor (override dragControls cursor)
+        this.renderer().domElement.style.cursor = null;
+      }
+  
+      // Frame cycle
+      this.tickFrame();
+      state.renderObjs.tick();
+      state.animationFrameRequestId = requestAnimationFrame(this._animationCycle);
+    },
+    scene: state => state.renderObjs.scene(), // Expose scene
+    camera: state => state.renderObjs.camera(), // Expose camera
+    renderer: state => state.renderObjs.renderer(), // Expose renderer
+    controls: state => state.renderObjs.controls(), // Expose controls
+    _destructor: function() {
+      this.pauseAnimation();
+      this.graph(new MultiDirectedGraph());
+    },
+    ...linkedRenderObjsMethods
   },
 
   stateInit: ({ controlType, rendererConfig, extraRenderers }) => ({
