@@ -8,7 +8,10 @@ import {
   TubeGeometry,
   QuadraticBezierCurve3,
   CubicBezierCurve3,
-  Box3
+  Box3,
+  Group,
+  AmbientLight,
+  DirectionalLight
 } from 'three';
 
 import createlayout from 'graphology.forcelayout';
@@ -600,7 +603,7 @@ export default Kapsule({
     }
   },
 
-  stateInit: () => ({
+  stateInit: ({ controlType, rendererConfig, extraRenderers }) => ({
     engineRunning: false,
     sphereGeometries: {}, // indexed by nodeVal and nodeResolution
     sphereMaterials: {}, // indexed by color and nodeOpacity
@@ -609,11 +612,21 @@ export default Kapsule({
     basicLineMaterials: {}, // indexed by color and linkOpacity
     particleGeometries: {}, // indexed by particleWidth
     particleMaterials: {}, // indexed by linkColor
+    controlType,
+    rendererConfig,
+    extraRenderers,
+    renderObjs: ThreeRenderObjects({ controlType, rendererConfig, extraRenderers })
+    .lights([
+      new AmbientLight(0xcccccc, Math.PI),
+      new DirectionalLight(0xffffff, 0.6 * Math.PI)
+    ])
   }),
 
-  init(threeObj, state) {
+  init(threeObj=new Group(), state) {
     // Main three object to manipulate
     state.graphScene = threeObj;
+    state.renderObjs.objects([state.graphScene]);
+    
     this.setGraphListeners();
 
     // Create forcelayout once
