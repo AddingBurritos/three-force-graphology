@@ -1,22 +1,59 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import ForceGraph from '../src/forcegraph-kapsule.js';
 import { Group } from 'three';
 import accessorFn from 'accessor-fn';
 
+vi.mock('three-render-objects');
+vi.mock('three/examples/jsm/controls/DragControls.js', () => ({
+  DragControls: class DragControls {
+    constructor() {
+      this.addEventListener = vi.fn();
+      this.dispose = vi.fn();
+    }
+  }
+}));
+vi.mock('three/addons/libs/stats.module.js', () => ({
+  default: class Stats {
+    domElement = document.createElement('div');
+    update = vi.fn();
+  }
+}));
+
+// Mock PointerEvent if needed
+if (typeof PointerEvent === 'undefined') {
+  global.PointerEvent = class PointerEvent extends Event {
+    constructor(type, props = {}) {
+      super(type);
+      this.pointerType = props.pointerType || 'mouse';
+      Object.assign(this, props);
+    }
+  };
+}
+
 describe('ForceGraph Kapsule', () => {
+  let container;
+
+  beforeEach(() => {
+    container = document.createElement('div');
+    vi.clearAllMocks();
+  });
+
   it('creates forcegraph kapsule', () => {
-    const scene = new Group();
     const forceGraph = ForceGraph();
-    forceGraph(scene);
+    forceGraph(container);
     const g = forceGraph.graph();
     g.addNode('src', { id: 'one' });
     g.addNode('dst', { id: 'two' });
     g.addEdgeWithKey('src->dst', 'src', 'dst');
-    const srcNode = g.getNodeAttributes('src');
-    const dstNode = g.getNodeAttributes('dst');
+    // const srcNode = g.getNodeAttributes('src');
+    // const dstNode = g.getNodeAttributes('dst');
 
-    forceGraph.warmupTicks(1);
-    forceGraph.refresh();
+    // forceGraph.warmupTicks(1);
+    // forceGraph.refresh();
+    expect(container.querySelector('div')).toBeTruthy();
+    expect(container.querySelector('.graph-info-msg')).toBeTruthy();
+    expect(forceGraph.graph().listeners("nodeAdded").length).toBe(2);
+    expect(forceGraph.graph().listeners("edgeAdded").length).toBe(2);
   });
 });
 

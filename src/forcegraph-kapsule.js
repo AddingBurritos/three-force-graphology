@@ -69,11 +69,11 @@ export default Kapsule({
         if (jsonUrl && !state.fetchingJson) {
           // Load data asynchronously
           state.fetchingJson = true;
-          state.onLoading();
+          state.onLoading(state);
 
           fetch(jsonUrl).then(r => r.json()).then(json => {
             state.fetchingJson = false;
-            state.onFinishLoading(json);
+            state.onFinishLoading(state);
             this.graph.from(json);
           });
         }
@@ -160,10 +160,135 @@ export default Kapsule({
     warmupTicks: { default: 0, triggerUpdate: false }, // how many times to tick the force engine at init before starting to render
     cooldownTicks: { default: Infinity, triggerUpdate: false },
     cooldownTime: { default: 15000, triggerUpdate: false }, // ms
-    onLoading: { default: () => {}, triggerUpdate: false },
-    onFinishLoading: { default: () => {}, triggerUpdate: false },
-    onUpdate: { default: () => {}, triggerUpdate: false },
-    onFinishUpdate: { default: () => {}, triggerUpdate: false },
+    onLoading: { default: (state) => state.infoElem.textContent = 'Loading...', triggerUpdate: false },
+    onFinishLoading: { default: (state) => state.infoElem.textContent = '', triggerUpdate: false },
+    onUpdate: { 
+      default: (state) => {
+        const camera = state.renderObjs.camera();
+
+        // re-aim camera, if still in default position (not user modified)
+        if (camera.position.x === 0 && camera.position.y === 0 && camera.position.z === state.lastSetCameraZ && state.graph.order) {
+          camera.lookAt(state.graphScene.position);
+          state.lastSetCameraZ = camera.position.z = Math.cbrt(state.graph.order) * CAMERA_DISTANCE2NODES_FACTOR;
+        }
+      }, 
+      triggerUpdate: false 
+    },
+    onFinishUpdate: { 
+      default: (state) => {
+        // Setup node drag interaction
+        if (state._dragControls) {
+          const curNodeDrag = state.graph.findNode((node, attrs) => attrs.__initialFixedPos && !attrs.__disposeControlsAfterDrag); // detect if there's a node being dragged using the existing drag controls
+          if (curNodeDrag) {
+            state.graph.setNodeAttribute(curNodeDrag, "__disposeControlsAfterDrag", true); // postpone previous controls disposal until drag ends
+          } else {
+            state._dragControls.dispose(); // cancel previous drag controls
+          }
+  
+          state._dragControls = undefined;
+        }
+  
+        if (state.enableNodeDrag && state.enablePointerInteraction && state.forceEngine === 'd3') { // Can't access node positions programmatically in ngraph
+          const camera = state.renderObjs.camera();
+          const renderer = state.renderObjs.renderer();
+          const controls = state.renderObjs.controls();
+          const dragControls = state._dragControls = new ThreeDragControls(
+            state.graph.mapNodes((node, attrs) => attrs.__threeObj).filter(obj => obj),
+            camera,
+            renderer.domElement
+          );
+  
+          dragControls.addEventListener('dragstart', function (event) {
+            controls.enabled = false; // Disable controls while dragging
+  
+            // track drag object movement
+            event.object.__initialPos = event.object.position.clone();
+            event.object.__prevPos = event.object.position.clone();
+  
+            const node = getGraphObj(event.object).__data;
+            !node.__initialFixedPos && (node.__initialFixedPos = {fx: node.fx, fy: node.fy, fz: node.fz});
+            !node.__initialPos && (node.__initialPos = {x: node.x, y: node.y, z: node.z});
+  
+            // lock node
+            ['x', 'y', 'z'].forEach(c => node[`f${c}`] = node[c]);
+  
+            // drag cursor
+            renderer.domElement.classList.add('grabbable');
+          });
+  
+          dragControls.addEventListener('drag', function (event) {
+            const nodeObj = getGraphObj(event.object);
+  
+            if (!event.object.hasOwnProperty('__graphObjType')) {
+              // If dragging a child of the node, update the node object instead
+              const initPos = event.object.__initialPos;
+              const prevPos = event.object.__prevPos;
+              const newPos = event.object.position;
+  
+              nodeObj.position.add(newPos.clone().sub(prevPos)); // translate node object by the motion delta
+              prevPos.copy(newPos);
+              newPos.copy(initPos); // reset child back to its initial position
+            }
+  
+            const node = nodeObj.__data;
+            const newPos = nodeObj.position;
+            const translate = {x: newPos.x - node.x, y: newPos.y - node.y, z: newPos.z - node.z};
+            // Move fx/fy/fz (and x/y/z) of nodes based on object new position
+            ['x', 'y', 'z'].forEach(c => node[`f${c}`] = node[c] = newPos[c]);
+  
+            this.resetCountdown();  // prevent freeze while dragging
+  
+            node.__dragged = true;
+            state.onNodeDrag(node, translate);
+          });
+  
+          dragControls.addEventListener('dragend', function (event) {
+            delete(event.object.__initialPos); // remove tracking attributes
+            delete(event.object.__prevPos);
+  
+            const node = {key: getGraphObj(event.object).__key, attributes: getGraphObj(event.object).__data};
+  
+            // dispose previous controls if needed
+            if (node.attributes.__disposeControlsAfterDrag) {
+              dragControls.dispose();
+              state.graph.removeNodeAttribute(node.key, "__disposeControlsAfterDrag");
+            }
+  
+            const initFixedPos = node.attributes.__initialFixedPos;
+            const initPos = node.attributes.__initialPos;
+            const translate = {x: initPos.x - node.attributes.x, y: initPos.y - node.attributes.y, z: initPos.z - node.attributes.z};
+            if (initFixedPos) {
+              ['x', 'y', 'z'].forEach(c => {
+                const fc = `f${c}`;
+                if (initFixedPos[fc] === undefined) {
+                  delete(node.attributes[fc])
+                }
+              });
+              delete(node.attributes.__initialFixedPos);
+              delete(node.attributes.__initialPos);
+              if (node.attributes.__dragged) {
+                delete(node.attributes.__dragged);
+                state.onNodeDragEnd(node, translate);
+              }
+            }
+  
+            this.resetCountdown();  // let the engine readjust after releasing fixed nodes
+  
+            if (state.enableNavigationControls) {
+              controls.enabled = true; // Re-enable controls
+              controls.domElement && controls.domElement.ownerDocument && controls.domElement.ownerDocument.dispatchEvent(
+                // simulate mouseup to ensure the controls don't take over after dragend
+                new PointerEvent('pointerup', { pointerType: 'touch' })
+              );
+            }
+  
+            // clear cursor
+            renderer.domElement.classList.remove('grabbable');
+          });
+        }
+      }, 
+      triggerUpdate: false 
+    },
     onEngineTick: { default: () => {}, triggerUpdate: false },
     onEngineStop: { default: () => {}, triggerUpdate: false },
 
@@ -671,129 +796,6 @@ export default Kapsule({
       this.pauseAnimation();
       this.graph(new MultiDirectedGraph());
     },
-    onLoading: state => state.infoElem.textContent = 'Loading...',
-    onFinishLoading: state => state.infoElem.textContent = '' ,
-    onUpdate: state => {
-      const camera = state.renderObjs.camera();
-
-      // re-aim camera, if still in default position (not user modified)
-      if (camera.position.x === 0 && camera.position.y === 0 && camera.position.z === state.lastSetCameraZ && state.graph.order) {
-        camera.lookAt(state.graphScene.position);
-        state.lastSetCameraZ = camera.position.z = Math.cbrt(state.graph.order) * CAMERA_DISTANCE2NODES_FACTOR;
-      }
-    },
-    onFinishUpdate: (state) => {
-      // Setup node drag interaction
-      if (state._dragControls) {
-        const curNodeDrag = state.graph.findNode((node, attrs) => attrs.__initialFixedPos && !attrs.__disposeControlsAfterDrag); // detect if there's a node being dragged using the existing drag controls
-        if (curNodeDrag) {
-          state.graph.setNodeAttribute(curNodeDrag, "__disposeControlsAfterDrag", true); // postpone previous controls disposal until drag ends
-        } else {
-          state._dragControls.dispose(); // cancel previous drag controls
-        }
-
-        state._dragControls = undefined;
-      }
-
-      if (state.enableNodeDrag && state.enablePointerInteraction && state.forceEngine === 'd3') { // Can't access node positions programmatically in ngraph
-        const camera = state.renderObjs.camera();
-        const renderer = state.renderObjs.renderer();
-        const controls = state.renderObjs.controls();
-        const dragControls = state._dragControls = new ThreeDragControls(
-          state.graph.mapNodes((node, attrs) => attrs.__threeObj).filter(obj => obj),
-          camera,
-          renderer.domElement
-        );
-
-        dragControls.addEventListener('dragstart', function (event) {
-          controls.enabled = false; // Disable controls while dragging
-
-          // track drag object movement
-          event.object.__initialPos = event.object.position.clone();
-          event.object.__prevPos = event.object.position.clone();
-
-          const node = getGraphObj(event.object).__data;
-          !node.__initialFixedPos && (node.__initialFixedPos = {fx: node.fx, fy: node.fy, fz: node.fz});
-          !node.__initialPos && (node.__initialPos = {x: node.x, y: node.y, z: node.z});
-
-          // lock node
-          ['x', 'y', 'z'].forEach(c => node[`f${c}`] = node[c]);
-
-          // drag cursor
-          renderer.domElement.classList.add('grabbable');
-        });
-
-        dragControls.addEventListener('drag', function (event) {
-          const nodeObj = getGraphObj(event.object);
-
-          if (!event.object.hasOwnProperty('__graphObjType')) {
-            // If dragging a child of the node, update the node object instead
-            const initPos = event.object.__initialPos;
-            const prevPos = event.object.__prevPos;
-            const newPos = event.object.position;
-
-            nodeObj.position.add(newPos.clone().sub(prevPos)); // translate node object by the motion delta
-            prevPos.copy(newPos);
-            newPos.copy(initPos); // reset child back to its initial position
-          }
-
-          const node = nodeObj.__data;
-          const newPos = nodeObj.position;
-          const translate = {x: newPos.x - node.x, y: newPos.y - node.y, z: newPos.z - node.z};
-          // Move fx/fy/fz (and x/y/z) of nodes based on object new position
-          ['x', 'y', 'z'].forEach(c => node[`f${c}`] = node[c] = newPos[c]);
-
-          this.resetCountdown();  // prevent freeze while dragging
-
-          node.__dragged = true;
-          state.onNodeDrag(node, translate);
-        });
-
-        dragControls.addEventListener('dragend', function (event) {
-          delete(event.object.__initialPos); // remove tracking attributes
-          delete(event.object.__prevPos);
-
-          const node = {key: getGraphObj(event.object).__key, attributes: getGraphObj(event.object).__data};
-
-          // dispose previous controls if needed
-          if (node.attributes.__disposeControlsAfterDrag) {
-            dragControls.dispose();
-            state.graph.removeNodeAttribute(node.key, "__disposeControlsAfterDrag");
-          }
-
-          const initFixedPos = node.attributes.__initialFixedPos;
-          const initPos = node.attributes.__initialPos;
-          const translate = {x: initPos.x - node.attributes.x, y: initPos.y - node.attributes.y, z: initPos.z - node.attributes.z};
-          if (initFixedPos) {
-            ['x', 'y', 'z'].forEach(c => {
-              const fc = `f${c}`;
-              if (initFixedPos[fc] === undefined) {
-                delete(node.attributes[fc])
-              }
-            });
-            delete(node.attributes.__initialFixedPos);
-            delete(node.attributes.__initialPos);
-            if (node.attributes.__dragged) {
-              delete(node.attributes.__dragged);
-              state.onNodeDragEnd(node, translate);
-            }
-          }
-
-          this.resetCountdown();  // let the engine readjust after releasing fixed nodes
-
-          if (state.enableNavigationControls) {
-            controls.enabled = true; // Re-enable controls
-            controls.domElement && controls.domElement.ownerDocument && controls.domElement.ownerDocument.dispatchEvent(
-              // simulate mouseup to ensure the controls don't take over after dragend
-              new PointerEvent('pointerup', { pointerType: 'touch' })
-            );
-          }
-
-          // clear cursor
-          renderer.domElement.classList.remove('grabbable');
-        });
-      }
-    },
     ...linkedRenderObjsMethods
   },
 
@@ -813,7 +815,8 @@ export default Kapsule({
     .lights([
       new AmbientLight(0xcccccc, Math.PI),
       new DirectionalLight(0xffffff, 0.6 * Math.PI)
-    ])
+    ]),
+    infoElem: document.createElement('div')
   }),
 
   init(domNode, state) {
@@ -846,7 +849,7 @@ export default Kapsule({
     state.lastSetCameraZ = camera.position.z;
 
     // Add info space
-    state.container.appendChild(state.infoElem = document.createElement('div'));
+    state.container.appendChild(state.infoElem);
     state.infoElem.className = 'graph-info-msg';
     state.infoElem.textContent = '';
 
@@ -926,7 +929,7 @@ export default Kapsule({
 
   update(state, changedProps) {
     state.engineRunning = false; // pause simulation
-    state.onUpdate();
+    state.onUpdate(state);
 
     const hasAnyPropChanged = propList => propList.some(p => changedProps.hasOwnProperty(p));
 
@@ -969,7 +972,7 @@ export default Kapsule({
 
     state.engineRunning = true; // resume simulation
 
-    state.onFinishUpdate();
+    state.onFinishUpdate(state);
   }
 });
 
