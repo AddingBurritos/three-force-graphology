@@ -799,7 +799,7 @@ export default Kapsule({
     ...linkedRenderObjsMethods
   },
 
-  stateInit: ({ controlType, rendererConfig, extraRenderers }) => ({
+  stateInit: ({ controlType, rendererConfig, extraRenderers, useWebGPU }) => ({
     engineRunning: false,
     sphereGeometries: {}, // indexed by nodeVal and nodeResolution
     sphereMaterials: {}, // indexed by color and nodeOpacity
@@ -811,7 +811,7 @@ export default Kapsule({
     controlType,
     rendererConfig,
     extraRenderers,
-    renderObjs: ThreeRenderObjects({ controlType, rendererConfig, extraRenderers })
+    renderObjs: ThreeRenderObjects({ controlType, rendererConfig, extraRenderers, useWebGPU })
     .lights([
       new AmbientLight(0xcccccc, Math.PI),
       new DirectionalLight(0xffffff, 0.6 * Math.PI)
