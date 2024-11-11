@@ -81,7 +81,7 @@ export default Kapsule({
       triggerUpdate: false
     },
     graph: {
-      default: new MultiDirectedGraph(),
+      default: () => new MultiDirectedGraph(),
       onChange(graph, state, prevGraph) {
         if (!state.initialised) return; // Ensure init has run before proceeding
 
@@ -820,6 +820,7 @@ export default Kapsule({
   }),
 
   init(domNode, state) {
+    state.graph = state.graph();
     // Main three object to manipulate
     state.graphScene = new Group();
     state.renderObjs.objects([state.graphScene]);

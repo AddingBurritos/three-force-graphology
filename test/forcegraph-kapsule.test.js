@@ -4,14 +4,14 @@ import { Group } from 'three';
 import accessorFn from 'accessor-fn';
 
 vi.mock('three-render-objects');
-vi.mock('three/examples/jsm/controls/DragControls.js', () => ({
-  DragControls: class DragControls {
-    constructor() {
-      this.addEventListener = vi.fn();
-      this.dispose = vi.fn();
-    }
-  }
-}));
+// vi.mock('three/examples/jsm/controls/DragControls.js', () => ({
+//   DragControls: class DragControls {
+//     constructor() {
+//       this.addEventListener = vi.fn();
+//       this.dispose = vi.fn();
+//     }
+//   }
+// }));
 vi.mock('three/addons/libs/stats.module.js', () => ({
   default: class Stats {
     domElement = document.createElement('div');
@@ -54,6 +54,26 @@ describe('ForceGraph Kapsule', () => {
     expect(container.querySelector('.graph-info-msg')).toBeTruthy();
     expect(forceGraph.graph().listeners("nodeAdded").length).toBe(2);
     expect(forceGraph.graph().listeners("edgeAdded").length).toBe(2);
+  });
+
+  it('should provide a graph', () => {
+    const forceGraph = ForceGraph();
+
+    const fg = forceGraph(container);
+    const graph = fg.graph();
+    graph.addNode("src");
+    graph.addNode("dst");
+    graph.addEdgeWithKey("test", "src", "dst");
+
+    expect(forceGraph.graph().order).toBe(2);
+    expect(forceGraph.graph().size).toBe(1);
+    expect(forceGraph.graph().listeners("nodeAdded").length).toBe(2);
+    expect(forceGraph.graph().listeners("edgeAdded").length).toBe(2);
+    expect(forceGraph.graph().listeners("nodeAttributesUpdated").length).toBe(2);
+    expect(forceGraph.graph().listeners("edgeAttributesUpdated").length).toBe(1);
+    expect(forceGraph.graph().listeners("nodeDropped").length).toBe(1);
+    expect(forceGraph.graph().listeners("edgeDropped").length).toBe(2);
+    expect(forceGraph.graph().listeners("cleared").length).toBe(2);
   });
 });
 
