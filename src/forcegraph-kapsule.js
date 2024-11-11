@@ -853,6 +853,75 @@ export default Kapsule({
     // Add stats
     stats = new Stats();
     document.body.appendChild(stats.domElement);
+    
+    state.renderObjs
+      .hoverOrderComparator((a, b) => {
+        // Prioritize graph objects
+        const aObj = getGraphObj(a);
+        if (!aObj) return 1;
+        const bObj = getGraphObj(b);
+        if (!bObj) return -1;
+
+        // Prioritize nodes over links
+        const isNode = o => o.__graphObjType === 'node';
+        return isNode(bObj) - isNode(aObj);
+      })
+      .tooltipContent(obj => {
+        const graphObj = getGraphObj(obj);
+        return graphObj ? accessorFn(state[`${graphObj.__graphObjType}Label`])(graphObj.__data) || '' : '';
+      })
+      .hoverDuringDrag(false)
+      .onHover(obj => {
+        // Update tooltip and trigger onHover events
+        const hoverObj = getGraphObj(obj);
+
+        if (hoverObj !== state.hoverObj) {
+          const prevObjType = state.hoverObj ? state.hoverObj.__graphObjType : null;
+          const prevObjData = state.hoverObj ? state.hoverObj.__data : null;
+          const objType = hoverObj ? hoverObj.__graphObjType : null;
+          const objData = hoverObj ? hoverObj.__data : null;
+          if (prevObjType && prevObjType !== objType) {
+            // Hover out
+            const fn = state[`on${prevObjType === 'node' ? 'Node' : 'Link'}Hover`];
+            fn && fn(null, prevObjData);
+          }
+          if (objType) {
+            // Hover in
+            const fn = state[`on${objType === 'node' ? 'Node' : 'Link'}Hover`];
+            fn && fn(objData, prevObjType === objType ? prevObjData : null);
+          }
+
+          // set pointer if hovered object is clickable
+          renderer.domElement.classList[
+            ((hoverObj && state[`on${objType === 'node' ? 'Node' : 'Link'}Click`]) || (!hoverObj && state.onBackgroundClick)) ? 'add' : 'remove'
+          ]('clickable');
+
+          state.hoverObj = hoverObj;
+        }
+      })
+      .clickAfterDrag(false)
+      .onClick((obj, ev) => {
+        const graphObj = getGraphObj(obj);
+        if (graphObj) {
+          const fn = state[`on${graphObj.__graphObjType === 'node' ? 'Node' : 'Link'}Click`];
+          fn && fn(graphObj.__data, ev);
+        } else {
+          state.onBackgroundClick && state.onBackgroundClick(ev);
+        }
+      })
+      .onRightClick((obj, ev) => {
+        // Handle right-click events
+        const graphObj = getGraphObj(obj);
+        if (graphObj) {
+          const fn = state[`on${graphObj.__graphObjType === 'node' ? 'Node' : 'Link'}RightClick`];
+          fn && fn(graphObj.__data, ev);
+        } else {
+          state.onBackgroundRightClick && state.onBackgroundRightClick(ev);
+        }
+      });
+      
+    // Kick-off renderer
+    this._animationCycle();
   },
 
   update(state, changedProps) {
