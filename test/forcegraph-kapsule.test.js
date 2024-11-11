@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import ForceGraph from '../src/forcegraph-kapsule.js';
 import { Group } from 'three';
 import accessorFn from 'accessor-fn';
+import MultiDirectedGraph from 'graphology';
 
 vi.mock('three-render-objects');
 // vi.mock('three/examples/jsm/controls/DragControls.js', () => ({
@@ -32,35 +33,36 @@ if (typeof PointerEvent === 'undefined') {
 
 describe('ForceGraph Kapsule', () => {
   let container;
+  let forceGraph
 
   beforeEach(() => {
     container = document.createElement('div');
     vi.clearAllMocks();
-  });
-
-  it('creates forcegraph kapsule', () => {
-    const forceGraph = ForceGraph();
-    forceGraph(container);
-    const g = forceGraph.graph();
-    g.addNode('src', { id: 'one' });
-    g.addNode('dst', { id: 'two' });
-    g.addEdgeWithKey('src->dst', 'src', 'dst');
-    // const srcNode = g.getNodeAttributes('src');
-    // const dstNode = g.getNodeAttributes('dst');
-
-    // forceGraph.warmupTicks(1);
-    // forceGraph.refresh();
-    expect(container.querySelector('div')).toBeTruthy();
-    expect(container.querySelector('.graph-info-msg')).toBeTruthy();
-    expect(forceGraph.graph().listeners("nodeAdded").length).toBe(2);
-    expect(forceGraph.graph().listeners("edgeAdded").length).toBe(2);
+    forceGraph = ForceGraph()(container);
   });
 
   it('should provide a graph', () => {
-    const forceGraph = ForceGraph();
+    const g = forceGraph.graph();
+    g.addNode("src");
+    g.addNode("dst");
+    g.addEdgeWithKey("test", "src", "dst");
 
-    const fg = forceGraph(container);
-    const graph = fg.graph();
+    expect(forceGraph.graph().order).toBe(2);
+    expect(forceGraph.graph().size).toBe(1);
+    expect(forceGraph.graph().listeners("nodeAdded").length).toBe(2);
+    expect(forceGraph.graph().listeners("edgeAdded").length).toBe(2);
+    expect(forceGraph.graph().listeners("nodeAttributesUpdated").length).toBe(2);
+    expect(forceGraph.graph().listeners("edgeAttributesUpdated").length).toBe(1);
+    expect(forceGraph.graph().listeners("nodeDropped").length).toBe(1);
+    expect(forceGraph.graph().listeners("edgeDropped").length).toBe(2);
+    expect(forceGraph.graph().listeners("cleared").length).toBe(2);
+  });
+
+  it('should accept an empty graph', () => {
+    const graph = new MultiDirectedGraph();
+
+    forceGraph.graph(graph);
+    
     graph.addNode("src");
     graph.addNode("dst");
     graph.addEdgeWithKey("test", "src", "dst");
@@ -74,6 +76,27 @@ describe('ForceGraph Kapsule', () => {
     expect(forceGraph.graph().listeners("nodeDropped").length).toBe(1);
     expect(forceGraph.graph().listeners("edgeDropped").length).toBe(2);
     expect(forceGraph.graph().listeners("cleared").length).toBe(2);
+  });
+
+  it('should accept a populated graph', () => {
+    const graph = new MultiDirectedGraph();
+    
+    graph.addNode("src");
+    graph.addNode("dst");
+    graph.addEdgeWithKey("test", "src", "dst");
+
+    forceGraph.graph(graph);
+
+    expect(forceGraph.graph().order).toBe(2);
+    expect(forceGraph.graph().size).toBe(1);
+    expect(forceGraph.graph().listeners("nodeAdded").length).toBe(2);
+    expect(forceGraph.graph().listeners("edgeAdded").length).toBe(2);
+    expect(forceGraph.graph().listeners("nodeAttributesUpdated").length).toBe(2);
+    expect(forceGraph.graph().listeners("edgeAttributesUpdated").length).toBe(1);
+    expect(forceGraph.graph().listeners("nodeDropped").length).toBe(1);
+    expect(forceGraph.graph().listeners("edgeDropped").length).toBe(2);
+    expect(forceGraph.graph().listeners("cleared").length).toBe(2);
+
   });
 });
 
