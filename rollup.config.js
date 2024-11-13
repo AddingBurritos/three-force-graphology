@@ -40,19 +40,5 @@ export default [
       nodePolyfills(),
       babel({ exclude: 'node_modules/**', babelHelpers: 'bundled' })
     ]
-  },
-  { // ES module
-    input: 'src/index.js',
-    external: [],
-    output: [
-      {
-        format: 'es',
-        file: `dist/${pkg.name}.mjs`
-      }
-    ],
-    external: [...Object.keys(pkg.dependencies), ...Object.keys(pkg.peerDependencies)],
-    plugins: [
-      babel({babelHelpers: 'bundled'})
-    ]
   }
 ];

@@ -124,8 +124,8 @@ export default Kapsule({
     nodeThreeObject: {},
     nodeThreeObjectExtend: { default: false },
     nodePositionUpdate: { triggerUpdate: false }, // custom function to call for updating the node's position. Signature: (threeObj, { x, y, z}, node). If the function returns a truthy value, the regular node position update will not run.
-    linkSource: { default: 'source' },
-    linkTarget: { default: 'target' },
+    linkSource: { default: (link) => link.attributes['source'] },
+    linkTarget: { default: (link) => link.attributes['target'] },
     linkVisibility: { default: true },
     linkColor: { default: 'color' },
     linkAutoColorBy: {},
@@ -570,14 +570,13 @@ export default Kapsule({
         const arrowLengthAccessor = accessorFn(state.linkDirectionalArrowLength);
         const nodeValAccessor = accessorFn(state.nodeVal);
 
-        state.graph.forEachEdge((key, attributes) => {
+        state.graph.forEachEdge((key, attributes, source, target, sourceAttributes, targetAttributes) => {
           const edge = {key, attributes};
           const arrowObj = edge.attributes.__arrowObj;
           if (!arrowObj) return;
 
-          const pos = state.layout.getEdgePosition(edge.key);
-          const startNode = {key: pos['from'], attributes: state.graph.getNodeAttributes(pos['from'])};
-          const endNode = {key: pos['to'], attributes: state.graph.getNodeAttributes(pos['to'])};
+          const startNode = {key: source, attributes: sourceAttributes};
+          const endNode = {key: target, attributes: targetAttributes};
 
           // TODO: check if node.attributes should have 'x' property. Where is the position really stored?
           if (!startNode.key || !endNode || !startNode.attributes.hasOwnProperty('x') || !endNode.attributes.hasOwnProperty('x')) return; // skip invalid link
