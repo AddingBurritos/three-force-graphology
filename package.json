@@ -72,6 +72,7 @@
     "rimraf": "^5.0.5",
     "rollup": "^4.9.6",
     "rollup-plugin-dts": "^6.1.0",
+    "rollup-plugin-polyfill-node": "^0.13.0",
     "tap": "^21.0.1",
     "typescript": "^5.3.3",
     "vitest": "^2.1.3"

@@ -2,18 +2,19 @@ import resolve from '@rollup/plugin-node-resolve';
 import commonJs from '@rollup/plugin-commonjs';
 import babel from '@rollup/plugin-babel';
 import terser from "@rollup/plugin-terser";
+import nodePolyfills from 'rollup-plugin-polyfill-node';
 import pkg from './package.json' assert { type: 'json' };
 
 const umdConf = {
   format: 'umd',
   name: 'ThreeForceGraph',
-  globals: { three: 'THREE' },
+  globals: { three: 'THREE', 'graphology.forcelayout': 'createlayout' },
   banner: `// Version ${pkg.version} ${pkg.name} - ${pkg.homepage}`
 };
 
 export default [
   {
-    external: ['three'],
+    external: [],
     input: 'src/index.js',
     output: [
       {
@@ -30,13 +31,19 @@ export default [
       }
     ],
     plugins: [
-      resolve(),
+      resolve({
+        browser: true,
+        preferBuiltins: false,
+        preserveSymlinks: true
+      }),
       commonJs(),
-      babel({ exclude: 'node_modules/**' })
+      nodePolyfills(),
+      babel({ exclude: 'node_modules/**', babelHelpers: 'bundled' })
     ]
   },
   { // ES module
     input: 'src/index.js',
+    external: [],
     output: [
       {
         format: 'es',
@@ -45,7 +52,7 @@ export default [
     ],
     external: [...Object.keys(pkg.dependencies), ...Object.keys(pkg.peerDependencies)],
     plugins: [
-      babel()
+      babel({babelHelpers: 'bundled'})
     ]
   }
 ];
