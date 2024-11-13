@@ -1,74 +1,65 @@
 import {
-  Group,
   Mesh,
-  MeshLambertMaterial,
-  Color,
   BufferGeometry,
   BufferAttribute,
   Matrix4,
   Vector3,
-  SphereGeometry,
   CylinderGeometry,
   TubeGeometry,
-  ConeGeometry,
-  Line,
-  LineBasicMaterial,
   QuadraticBezierCurve3,
   CubicBezierCurve3,
-  Box3
+  Box3,
+  Group,
+  AmbientLight,
+  DirectionalLight
 } from 'three';
 
-const three = window.THREE
-  ? window.THREE // Prefer consumption from global THREE, if exists
-  : {
-    Group,
-    Mesh,
-    MeshLambertMaterial,
-    Color,
-    BufferGeometry,
-    BufferAttribute,
-    Matrix4,
-    Vector3,
-    SphereGeometry,
-    CylinderGeometry,
-    TubeGeometry,
-    ConeGeometry,
-    Line,
-    LineBasicMaterial,
-    QuadraticBezierCurve3,
-    CubicBezierCurve3,
-    Box3
-  };
-
-import {
-  forceSimulation as d3ForceSimulation,
-  forceLink as d3ForceLink,
-  forceManyBody as d3ForceManyBody,
-  forceCenter as d3ForceCenter,
-  forceRadial as d3ForceRadial
-} from 'd3-force-3d';
-
-import graph from 'ngraph.graph';
-import forcelayout from 'ngraph.forcelayout';
-const ngraph = { graph, forcelayout };
+import createlayout from 'graphology.forcelayout';
+import MultiDirectedGraph from 'graphology';
+import * as graphEvents from './utils/graph-events.js';
 
 import Kapsule from 'kapsule';
 import accessorFn from 'accessor-fn';
 
 import { min as d3Min, max as d3Max } from 'd3-array';
 
-import threeDigest from './utils/three-digest';
-import { emptyObject } from './utils/three-gc';
-import { autoColorObjects, colorStr2Hex, colorAlpha } from './utils/color-utils';
-import getDagDepths from './utils/dagDepths';
+import { emptyObject } from './utils/three-gc.js';
+import { refreshEdge, refreshNode } from './utils/graph-refresh.js';
+import { createBaseThreePhotons, createThreePhotonsGeometry, createThreePhotonsMaterial } from './utils/three-objs.js';
 
-//
 
-const DAG_LEVEL_NODE_RATIO = 2;
+import ThreeRenderObjects from 'three-render-objects';
+import { DragControls as ThreeDragControls } from 'three/examples/jsm/controls/DragControls.js';
+import Stats from 'three/addons/libs/stats.module.js';
+import linkKapsule from './utils/kapsule-link.js';
 
 // support multiple method names for backwards threejs compatibility
-const setAttributeFn = new three.BufferGeometry().setAttribute ? 'setAttribute' : 'addAttribute';
-const applyMatrix4Fn = new three.BufferGeometry().applyMatrix4 ? 'applyMatrix4' : 'applyMatrix';
+const setAttributeFn = new BufferGeometry().setAttribute ? 'setAttribute' : 'addAttribute';
+const applyMatrix4Fn = new BufferGeometry().applyMatrix4 ? 'applyMatrix4' : 'applyMatrix';
+
+let stats;
+const CAMERA_DISTANCE2NODES_FACTOR = 170;
+
+// Expose config from renderObjs
+const bindRenderObjs = linkKapsule('renderObjs', ThreeRenderObjects);
+const linkedRenderObjsProps = Object.assign(...[
+  'width',
+  'height',
+  'backgroundColor',
+  'showNavInfo',
+  'enablePointerInteraction'
+].map(p => ({ [p]: bindRenderObjs.linkProp(p)})));
+const linkedRenderObjsMethods = Object.assign(
+  ...[
+    'lights',
+    'cameraPosition',
+    'postProcessingComposer'
+  ].map(p => ({ [p]: bindRenderObjs.linkMethod(p)})),
+  {
+    graph2ScreenCoords: bindRenderObjs.linkMethod('getScreenCoords'),
+    screen2GraphCoords: bindRenderObjs.linkMethod('getSceneCoords')
+  }
+);
 
 export default Kapsule({
 
@@ -78,50 +69,50 @@ export default Kapsule({
         if (jsonUrl && !state.fetchingJson) {
           // Load data asynchronously
           state.fetchingJson = true;
-          state.onLoading();
+          state.onLoading(state);
 
           fetch(jsonUrl).then(r => r.json()).then(json => {
             state.fetchingJson = false;
-            state.onFinishLoading(json);
-            this.graphData(json);
+            state.onFinishLoading(state);
+            this.graph.from(json);
           });
         }
       },
       triggerUpdate: false
     },
-    graphData: {
-      default: {
-        nodes: [],
-        links: []
-      },
-      onChange(graphData, state) {
+    graph: {
+      default: () => new MultiDirectedGraph(),
+      onChange(graph, state, prevGraph) {
+        if (!state.initialised) return; // Ensure init has run before proceeding
+
         state.engineRunning = false; // Pause simulation immediately
+        
+        if (prevGraph) {
+          this.removeGraphListeners();
+        }
+
+        this.setGraphListeners();
+
+        // TODO: delete old layout
+        if (state.layout) {
+          state.layout.dispose();
+        }
+        delete state.layout;
+
+        // Create forcelayout once
+        state.layout = createlayout(graph, { dimensions: state.numDimensions, ...state.ngraphPhysics });
+
+        state._flushObjects = true;
       }
     },
     numDimensions: {
       default: 3,
       onChange(numDim, state) {
-        const chargeForce = state.d3ForceLayout.force('charge');
-        // Increase repulsion on 3D mode for improved spatial separation
-        if (chargeForce) { chargeForce.strength(numDim > 2 ? -60 : -30) }
-
-        if (numDim < 3) { eraseDimension(state.graphData.nodes, 'z'); }
-        if (numDim < 2) { eraseDimension(state.graphData.nodes, 'y'); }
-
-        function eraseDimension(nodes, dim) {
-          nodes.forEach(d => {
-            delete d[dim];     // position
-            delete d[`v${dim}`]; // velocity
-          });
+        if (state.layout) {
+          state.layout.setDimensions(numDim);
         }
       }
     },
-    dagMode: { onChange(dagMode, state) { // td, bu, lr, rl, zin, zout, radialin, radialout
-      !dagMode && state.forceEngine === 'd3' && (state.graphData.nodes || []).forEach(n => n.fx = n.fy = n.fz = undefined); // unfix nodes when disabling dag mode
-    }},
-    dagLevelDistance: {},
-    dagNodeFilter: { default: node => true },
-    onDagError: { triggerUpdate: false },
     nodeRelSize: { default: 4 }, // volume per val unit
     nodeId: { default: 'id' },
     nodeVal: { default: 'val' },
@@ -133,8 +124,8 @@ export default Kapsule({
     nodeThreeObject: {},
     nodeThreeObjectExtend: { default: false },
     nodePositionUpdate: { triggerUpdate: false }, // custom function to call for updating the node's position. Signature: (threeObj, { x, y, z}, node). If the function returns a truthy value, the regular node position update will not run.
-    linkSource: { default: 'source' },
-    linkTarget: { default: 'target' },
+    linkSource: { default: (link) => link.attributes['source'] },
+    linkTarget: { default: (link) => link.attributes['target'] },
     linkVisibility: { default: true },
     linkColor: { default: 'color' },
     linkAutoColorBy: {},
@@ -156,11 +147,7 @@ export default Kapsule({
     linkDirectionalParticleWidth: { default: 0.5 },
     linkDirectionalParticleColor: {},
     linkDirectionalParticleResolution: { default: 4 }, // how many slice segments in the particle sphere's circumference
-    forceEngine: { default: 'd3' }, // d3 or ngraph
-    d3AlphaMin: { default: 0 },
-    d3AlphaDecay: { default: 0.0228, triggerUpdate: false, onChange(alphaDecay, state) { state.d3ForceLayout.alphaDecay(alphaDecay) }},
-    d3AlphaTarget: { default: 0, triggerUpdate: false, onChange(alphaTarget, state) { state.d3ForceLayout.alphaTarget(alphaTarget) }},
-    d3VelocityDecay: { default: 0.4, triggerUpdate: false, onChange(velocityDecay, state) { state.d3ForceLayout.velocityDecay(velocityDecay) } },
+    forceEngine: { default: 'graphology' },
     ngraphPhysics: { default: {
       // defaults from https://github.com/anvaka/ngraph.physics.simulator/blob/master/index.js
       timeStep: 20,
@@ -173,31 +160,203 @@ export default Kapsule({
     warmupTicks: { default: 0, triggerUpdate: false }, // how many times to tick the force engine at init before starting to render
     cooldownTicks: { default: Infinity, triggerUpdate: false },
     cooldownTime: { default: 15000, triggerUpdate: false }, // ms
-    onLoading: { default: () => {}, triggerUpdate: false },
-    onFinishLoading: { default: () => {}, triggerUpdate: false },
-    onUpdate: { default: () => {}, triggerUpdate: false },
-    onFinishUpdate: { default: () => {}, triggerUpdate: false },
+    onLoading: { default: (state) => state.infoElem.textContent = 'Loading...', triggerUpdate: false },
+    onFinishLoading: { default: (state) => state.infoElem.textContent = '', triggerUpdate: false },
+    onUpdate: { 
+      default: (state) => {
+        const camera = state.renderObjs.camera();
+
+        // re-aim camera, if still in default position (not user modified)
+        if (camera.position.x === 0 && camera.position.y === 0 && camera.position.z === state.lastSetCameraZ && state.graph.order) {
+          camera.lookAt(state.graphScene.position);
+          state.lastSetCameraZ = camera.position.z = Math.cbrt(state.graph.order) * CAMERA_DISTANCE2NODES_FACTOR;
+        }
+      }, 
+      triggerUpdate: false 
+    },
+    onFinishUpdate: { 
+      default: (state) => {
+        // Setup node drag interaction
+        if (state._dragControls) {
+          const curNodeDrag = state.graph.findNode((node, attrs) => attrs.__initialFixedPos && !attrs.__disposeControlsAfterDrag); // detect if there's a node being dragged using the existing drag controls
+          if (curNodeDrag) {
+            state.graph.setNodeAttribute(curNodeDrag, "__disposeControlsAfterDrag", true); // postpone previous controls disposal until drag ends
+          } else {
+            state._dragControls.dispose(); // cancel previous drag controls
+          }
+  
+          state._dragControls = undefined;
+        }
+  
+        if (state.enableNodeDrag && state.enablePointerInteraction && state.forceEngine === 'd3') { // Can't access node positions programmatically in ngraph
+          const camera = state.renderObjs.camera();
+          const renderer = state.renderObjs.renderer();
+          const controls = state.renderObjs.controls();
+          const dragControls = state._dragControls = new ThreeDragControls(
+            state.graph.mapNodes((node, attrs) => attrs.__threeObj).filter(obj => obj),
+            camera,
+            renderer.domElement
+          );
+  
+          dragControls.addEventListener('dragstart', function (event) {
+            controls.enabled = false; // Disable controls while dragging
+  
+            // track drag object movement
+            event.object.__initialPos = event.object.position.clone();
+            event.object.__prevPos = event.object.position.clone();
+  
+            const node = getGraphObj(event.object).__data;
+            !node.__initialFixedPos && (node.__initialFixedPos = {fx: node.fx, fy: node.fy, fz: node.fz});
+            !node.__initialPos && (node.__initialPos = {x: node.x, y: node.y, z: node.z});
+  
+            // lock node
+            ['x', 'y', 'z'].forEach(c => node[`f${c}`] = node[c]);
+  
+            // drag cursor
+            renderer.domElement.classList.add('grabbable');
+          });
+  
+          dragControls.addEventListener('drag', function (event) {
+            const nodeObj = getGraphObj(event.object);
+  
+            if (!event.object.hasOwnProperty('__graphObjType')) {
+              // If dragging a child of the node, update the node object instead
+              const initPos = event.object.__initialPos;
+              const prevPos = event.object.__prevPos;
+              const newPos = event.object.position;
+  
+              nodeObj.position.add(newPos.clone().sub(prevPos)); // translate node object by the motion delta
+              prevPos.copy(newPos);
+              newPos.copy(initPos); // reset child back to its initial position
+            }
+  
+            const node = nodeObj.__data;
+            const newPos = nodeObj.position;
+            const translate = {x: newPos.x - node.x, y: newPos.y - node.y, z: newPos.z - node.z};
+            // Move fx/fy/fz (and x/y/z) of nodes based on object new position
+            ['x', 'y', 'z'].forEach(c => node[`f${c}`] = node[c] = newPos[c]);
+  
+            this.resetCountdown();  // prevent freeze while dragging
+  
+            node.__dragged = true;
+            state.onNodeDrag(node, translate);
+          });
+  
+          dragControls.addEventListener('dragend', function (event) {
+            delete(event.object.__initialPos); // remove tracking attributes
+            delete(event.object.__prevPos);
+  
+            const node = {key: getGraphObj(event.object).__key, attributes: getGraphObj(event.object).__data};
+  
+            // dispose previous controls if needed
+            if (node.attributes.__disposeControlsAfterDrag) {
+              dragControls.dispose();
+              state.graph.removeNodeAttribute(node.key, "__disposeControlsAfterDrag");
+            }
+  
+            const initFixedPos = node.attributes.__initialFixedPos;
+            const initPos = node.attributes.__initialPos;
+            const translate = {x: initPos.x - node.attributes.x, y: initPos.y - node.attributes.y, z: initPos.z - node.attributes.z};
+            if (initFixedPos) {
+              ['x', 'y', 'z'].forEach(c => {
+                const fc = `f${c}`;
+                if (initFixedPos[fc] === undefined) {
+                  delete(node.attributes[fc])
+                }
+              });
+              delete(node.attributes.__initialFixedPos);
+              delete(node.attributes.__initialPos);
+              if (node.attributes.__dragged) {
+                delete(node.attributes.__dragged);
+                state.onNodeDragEnd(node, translate);
+              }
+            }
+  
+            this.resetCountdown();  // let the engine readjust after releasing fixed nodes
+  
+            if (state.enableNavigationControls) {
+              controls.enabled = true; // Re-enable controls
+              controls.domElement && controls.domElement.ownerDocument && controls.domElement.ownerDocument.dispatchEvent(
+                // simulate mouseup to ensure the controls don't take over after dragend
+                new PointerEvent('pointerup', { pointerType: 'touch' })
+              );
+            }
+  
+            // clear cursor
+            renderer.domElement.classList.remove('grabbable');
+          });
+        }
+      }, 
+      triggerUpdate: false 
+    },
     onEngineTick: { default: () => {}, triggerUpdate: false },
-    onEngineStop: { default: () => {}, triggerUpdate: false }
+    onEngineStop: { default: () => {}, triggerUpdate: false },
+
+    // NEW BELOW
+    nodeLabel: { default: 'name', triggerUpdate: false },
+    linkLabel: { default: 'name', triggerUpdate: false },
+    linkHoverPrecision: { 
+      default: 1, 
+      onChange: (p, state) => state.renderObjs.lineHoverPrecision(p), 
+      triggerUpdate: false },
+    enableNavigationControls: {
+      default: true,
+      onChange(enable, state) {
+        const controls = state.renderObjs.controls();
+        if (controls) {
+          controls.enabled = enable;
+          // trigger mouseup on re-enable to prevent sticky controls
+          enable && controls.domElement && controls.domElement.dispatchEvent(new PointerEvent('pointerup'));
+        }
+      },
+      triggerUpdate: false
+    },
+    enableNodeDrag: { default: true, triggerUpdate: false },
+    onNodeDrag: { default: () => {}, triggerUpdate: false },
+    onNodeDragEnd: { default: () => {}, triggerUpdate: false },
+    onNodeClick: { triggerUpdate: false },
+    onNodeRightClick: { triggerUpdate: false },
+    onNodeHover: { triggerUpdate: false },
+    onLinkClick: { triggerUpdate: false },
+    onLinkRightClick: { triggerUpdate: false },
+    onLinkHover: { triggerUpdate: false },
+    onBackgroundClick: { triggerUpdate: false },
+    onBackgroundRightClick: { triggerUpdate: false },
+    ...linkedRenderObjsProps
   },
 
   methods: {
+    nodeAdded: function(state, node) {
+      graphEvents.nodeAddedHandler(state, node);
+      return this;
+    },
+    edgeAdded: function(state, edge) {
+      graphEvents.edgeAddedHandler(state, edge);
+      return this;
+    },
+    nodeAttributesUpdated: function(state, attrUpdate) {
+      graphEvents.nodeAttributesUpdatedHandler(state, attrUpdate);
+      return this;
+    },
+    edgeAttributesUpdated: function(state, attrUpdate) {
+      graphEvents.edgeAttributesUpdatedHandler(state, attrUpdate);
+      return this;
+    },
+    nodeDropped: function(state, node) {
+      graphEvents.nodeDroppedHandler(state, node);
+      return this;
+    },
+    edgeDropped: function(state, edge) {
+      graphEvents.edgeDroppedHandler(state, edge);
+      return this;
+    },
+    cleared: function(state) {
+      graphEvents.clearHandler(state);
+      return this;
+    },
     refresh: function(state) {
       state._flushObjects = true;
       state._rerender();
-      return this;
-    },
-    // Expose d3 forces for external manipulation
-    d3Force: function(state, forceName, forceFn) {
-      if (forceFn === undefined) {
-        return state.d3ForceLayout.force(forceName); // Force getter
-      }
-      state.d3ForceLayout.force(forceName, forceFn); // Force setter
-      return this;
-    },
-    d3ReheatSimulation: function(state) {
-      state.d3ForceLayout.alpha(1);
-      this.resetCountdown();
       return this;
     },
     // reset cooldown state
@@ -208,7 +367,6 @@ export default Kapsule({
       return this;
     },
     tickFrame: function(state) {
-      const isD3Sim = state.forceEngine !== 'ngraph';
 
       if (state.engineRunning) { layoutTick(); }
       updateArrows();
@@ -221,24 +379,24 @@ export default Kapsule({
       function layoutTick() {
         if (
           ++state.cntTicks > state.cooldownTicks ||
-          (new Date()) - state.startTickTime > state.cooldownTime ||
-          (isD3Sim && state.d3AlphaMin > 0 && state.d3ForceLayout.alpha() < state.d3AlphaMin)
+          (new Date()) - state.startTickTime > state.cooldownTime
         ) {
           state.engineRunning = false; // Stop ticking graph
           state.onEngineStop();
         } else {
-          state.layout[isD3Sim ? 'tick' : 'step'](); // Tick it
+          state.layout.step(); // Tick it
           state.onEngineTick();
         }
 
         const nodeThreeObjectExtendAccessor = accessorFn(state.nodeThreeObjectExtend);
 
         // Update nodes position
-        state.graphData.nodes.forEach(node => {
-          const obj = node.__threeObj;
+        state.graph.forEachNode((key, attributes) => {
+          const node = { key, attributes };
+          const obj = node.attributes.__threeObj;
           if (!obj) return;
 
-          const pos = isD3Sim ? node : state.layout.getNodePosition(node[state.nodeId]);
+          const pos = state.layout.getNodePosition(node.key);
 
           const extendedObj = nodeThreeObjectExtendAccessor(node);
           if (!state.nodePositionUpdate
@@ -255,32 +413,31 @@ export default Kapsule({
         const linkCurvatureAccessor = accessorFn(state.linkCurvature);
         const linkCurveRotationAccessor = accessorFn(state.linkCurveRotation);
         const linkThreeObjectExtendAccessor = accessorFn(state.linkThreeObjectExtend);
-        state.graphData.links.forEach(link => {
-          const lineObj = link.__lineObj;
+        state.graph.forEachEdge((key, attributes) => {
+          const edge = { key, attributes };
+          const lineObj = edge.attributes.__lineObj;
           if (!lineObj) return;
 
-          const pos = isD3Sim
-            ? link
-            : state.layout.getLinkPosition(state.layout.graph.getLink(link.source, link.target).id);
-          const start = pos[isD3Sim ? 'source' : 'from'];
-          const end = pos[isD3Sim ? 'target' : 'to'];
+          const pos = state.layout.getEdgePosition(edge.key);
+          const start = pos.from;
+          const end = pos.to;
 
           if (!start || !end || !start.hasOwnProperty('x') || !end.hasOwnProperty('x')) return; // skip invalid link
 
-          calcLinkCurve(link); // calculate link curve for all links, including custom replaced, so it can be used in directional functionality
+          calcLinkCurve(edge); // calculate link curve for all links, including custom replaced, so it can be used in directional functionality
 
-          const extendedObj = linkThreeObjectExtendAccessor(link);
+          const extendedObj = linkThreeObjectExtendAccessor(edge);
           if (state.linkPositionUpdate && state.linkPositionUpdate(
               extendedObj ? lineObj.children[1] : lineObj, // pass child custom object if extending the default
               { start: { x: start.x, y: start.y, z: start.z }, end: { x: end.x, y: end.y, z: end.z } },
-              link)
+              edge)
           && !extendedObj) {
             // exit if successfully custom updated position of non-extended obj
             return;
           }
 
           const curveResolution = 30; // # line segments
-          const curve = link.__curve;
+          const curve = edge.attributes.__curve;
 
           // select default line obj if it's an extended group
           const line = lineObj.children.length ? lineObj.children[0] : lineObj;
@@ -289,7 +446,7 @@ export default Kapsule({
             if (!curve) { // straight line
               let linePos = line.geometry.getAttribute('position');
               if (!linePos || !linePos.array || linePos.array.length !== 6) {
-                line.geometry[setAttributeFn]('position', linePos = new three.BufferAttribute(new Float32Array(2 * 3), 3));
+                line.geometry[setAttributeFn]('position', linePos = new BufferAttribute(new Float32Array(2 * 3), 3));
               }
 
               linePos.array[0] = start.x;
@@ -310,19 +467,19 @@ export default Kapsule({
 
             if (!curve) { // straight tube
               if (!line.geometry.type.match(/^Cylinder(Buffer)?Geometry$/)) {
-                const linkWidth = Math.ceil(linkWidthAccessor(link) * 10) / 10;
+                const linkWidth = Math.ceil(linkWidthAccessor(edge) * 10) / 10;
                 const r = linkWidth / 2;
 
-                const geometry = new three.CylinderGeometry(r, r, 1, state.linkResolution, 1, false);
-                geometry[applyMatrix4Fn](new three.Matrix4().makeTranslation(0, 1 / 2, 0));
-                geometry[applyMatrix4Fn](new three.Matrix4().makeRotationX(Math.PI / 2));
+                const geometry = new CylinderGeometry(r, r, 1, state.linkResolution, 1, false);
+                geometry[applyMatrix4Fn](new Matrix4().makeTranslation(0, 1 / 2, 0));
+                geometry[applyMatrix4Fn](new Matrix4().makeRotationX(Math.PI / 2));
 
                 line.geometry.dispose();
                 line.geometry = geometry;
               }
 
-              const vStart = new three.Vector3(start.x, start.y || 0, start.z || 0);
-              const vEnd = new three.Vector3(end.x, end.y || 0, end.z || 0);
+              const vStart = new Vector3(start.x, start.y || 0, start.z || 0);
+              const vEnd = new Vector3(end.x, end.y || 0, end.z || 0);
               const distance = vStart.distanceTo(vEnd);
 
               line.position.x = vStart.x;
@@ -341,10 +498,10 @@ export default Kapsule({
                 line.scale.set(1, 1, 1);
               }
 
-              const linkWidth = Math.ceil(linkWidthAccessor(link) * 10) / 10;
+              const linkWidth = Math.ceil(linkWidthAccessor(edge) * 10) / 10;
               const r = linkWidth / 2;
 
-              const geometry = new three.TubeGeometry(curve, curveResolution, r, state.linkResolution, false);
+              const geometry = new TubeGeometry(curve, curveResolution, r, state.linkResolution, false);
 
               line.geometry.dispose();
               line.geometry = geometry;
@@ -354,57 +511,55 @@ export default Kapsule({
 
         //
 
-        function calcLinkCurve(link) {
-          const pos = isD3Sim
-            ? link
-            : state.layout.getLinkPosition(state.layout.graph.getLink(link.source, link.target).id);
-          const start = pos[isD3Sim ? 'source' : 'from'];
-          const end = pos[isD3Sim ? 'target' : 'to'];
+        function calcLinkCurve(edge) {
+          const pos = state.layout.getEdgePosition(edge.key);
+          const start = pos['from'];
+          const end = pos['to'];
 
           if (!start || !end || !start.hasOwnProperty('x') || !end.hasOwnProperty('x')) return; // skip invalid link
 
-          const curvature = linkCurvatureAccessor(link);
+          const curvature = linkCurvatureAccessor(edge);
 
           if (!curvature) {
-            link.__curve = null; // Straight line
+            edge.attributes.__curve = null; // Straight line
 
           } else { // bezier curve line (only for line types)
-            const vStart = new three.Vector3(start.x, start.y || 0, start.z || 0);
-            const vEnd= new three.Vector3(end.x, end.y || 0, end.z || 0);
+            const vStart = new Vector3(start.x, start.y || 0, start.z || 0);
+            const vEnd= new Vector3(end.x, end.y || 0, end.z || 0);
 
             const l = vStart.distanceTo(vEnd); // line length
 
             let curve;
-            const curveRotation = linkCurveRotationAccessor(link);
+            const curveRotation = linkCurveRotationAccessor(edge);
 
             if (l > 0) {
               const dx = end.x - start.x;
               const dy = end.y - start.y || 0;
 
-              const vLine = new three.Vector3()
+              const vLine = new Vector3()
                 .subVectors(vEnd, vStart);
 
               const cp = vLine.clone()
                 .multiplyScalar(curvature)
-                .cross((dx !== 0 || dy !== 0) ? new three.Vector3(0, 0, 1) : new three.Vector3(0, 1, 0)) // avoid cross-product of parallel vectors (prefer Z, fallback to Y)
+                .cross((dx !== 0 || dy !== 0) ? new Vector3(0, 0, 1) : new Vector3(0, 1, 0)) // avoid cross-product of parallel vectors (prefer Z, fallback to Y)
                 .applyAxisAngle(vLine.normalize(), curveRotation) // rotate along line axis according to linkCurveRotation
-                .add((new three.Vector3()).addVectors(vStart, vEnd).divideScalar(2));
+                .add((new Vector3()).addVectors(vStart, vEnd).divideScalar(2));
 
-              curve = new three.QuadraticBezierCurve3(vStart, cp, vEnd);
+              curve = new QuadraticBezierCurve3(vStart, cp, vEnd);
             } else { // Same point, draw a loop
               const d = curvature * 70;
               const endAngle = -curveRotation; // Rotate clockwise (from Z angle perspective)
               const startAngle = endAngle + Math.PI / 2;
 
-              curve = new three.CubicBezierCurve3(
+              curve = new CubicBezierCurve3(
                 vStart,
-                new three.Vector3(d * Math.cos(startAngle), d * Math.sin(startAngle), 0).add(vStart),
-                new three.Vector3(d * Math.cos(endAngle), d * Math.sin(endAngle), 0).add(vStart),
+                new Vector3(d * Math.cos(startAngle), d * Math.sin(startAngle), 0).add(vStart),
+                new Vector3(d * Math.cos(endAngle), d * Math.sin(endAngle), 0).add(vStart),
                 vEnd
               );
             }
 
-            link.__curve = curve;
+            edge.attributes.__curve = curve;
           }
         }
       }
@@ -415,39 +570,38 @@ export default Kapsule({
         const arrowLengthAccessor = accessorFn(state.linkDirectionalArrowLength);
         const nodeValAccessor = accessorFn(state.nodeVal);
 
-        state.graphData.links.forEach(link => {
-          const arrowObj = link.__arrowObj;
+        state.graph.forEachEdge((key, attributes, source, target, sourceAttributes, targetAttributes) => {
+          const edge = {key, attributes};
+          const arrowObj = edge.attributes.__arrowObj;
           if (!arrowObj) return;
 
-          const pos = isD3Sim
-            ? link
-            : state.layout.getLinkPosition(state.layout.graph.getLink(link.source, link.target).id);
-          const start = pos[isD3Sim ? 'source' : 'from'];
-          const end = pos[isD3Sim ? 'target' : 'to'];
+          const startNode = {key: source, attributes: sourceAttributes};
+          const endNode = {key: target, attributes: targetAttributes};
 
-          if (!start || !end || !start.hasOwnProperty('x') || !end.hasOwnProperty('x')) return; // skip invalid link
+          // TODO: check if node.attributes should have 'x' property. Where is the position really stored?
+          if (!startNode.key || !endNode || !startNode.attributes.hasOwnProperty('x') || !endNode.attributes.hasOwnProperty('x')) return; // skip invalid link
 
-          const startR = Math.cbrt(Math.max(0, nodeValAccessor(start) || 1)) * state.nodeRelSize;
-          const endR = Math.cbrt(Math.max(0, nodeValAccessor(end) || 1)) * state.nodeRelSize;
+          const startR = Math.cbrt(Math.max(0, nodeValAccessor(startNode) || 1)) * state.nodeRelSize;
+          const endR = Math.cbrt(Math.max(0, nodeValAccessor(endNode) || 1)) * state.nodeRelSize;
 
-          const arrowLength = arrowLengthAccessor(link);
-          const arrowRelPos = arrowRelPosAccessor(link);
+          const arrowLength = arrowLengthAccessor(edge);
+          const arrowRelPos = arrowRelPosAccessor(edge);
 
-          const getPosAlongLine = link.__curve
-            ? t => link.__curve.getPoint(t) // interpolate along bezier curve
+          const getPosAlongLine = edge.attributes.__curve
+            ? t => edge.attributes.__curve.getPoint(t) // interpolate along bezier curve
             : t => {
             // straight line: interpolate linearly
             const iplt = (dim, start, end, t) => start[dim] + (end[dim] - start[dim]) * t || 0;
             return {
-              x: iplt('x', start, end, t),
-              y: iplt('y', start, end, t),
-              z: iplt('z', start, end, t)
+              x: iplt('x', startNodeAttrs, endNodeAttrs, t),
+              y: iplt('y', startNodeAttrs, endNodeAttrs, t),
+              z: iplt('z', startNodeAttrs, endNodeAttrs, t)
             }
           };
 
-          const lineLen = link.__curve
-            ? link.__curve.getLength()
-            : Math.sqrt(['x', 'y', 'z'].map(dim => Math.pow((end[dim] || 0) - (start[dim] || 0), 2)).reduce((acc, v) => acc + v, 0));
+          const lineLen = edge.attributes.__curve
+            ? edge.attributes.__curve.getLength()
+            : Math.sqrt(['x', 'y', 'z'].map(dim => Math.pow((endNode.attributes[dim] || 0) - (startNode.attributes[dim] || 0), 2)).reduce((acc, v) => acc + v, 0));
 
           const posAlongLine = startR + arrowLength + (lineLen - startR - endR - arrowLength) * arrowRelPos;
 
@@ -456,7 +610,7 @@ export default Kapsule({
 
           ['x', 'y', 'z'].forEach(dim => arrowObj.position[dim] = arrowTail[dim]);
 
-          const headVec = new three.Vector3(...['x', 'y', 'z'].map(c => arrowHead[c]));
+          const headVec = new Vector3(...['x', 'y', 'z'].map(c => arrowHead[c]));
           arrowObj.parent.localToWorld(headVec); // lookAt requires world coords
           arrowObj.lookAt(headVec);
         });
@@ -465,24 +619,23 @@ export default Kapsule({
       function updatePhotons() {
         // update link particle positions
         const particleSpeedAccessor = accessorFn(state.linkDirectionalParticleSpeed);
-        state.graphData.links.forEach(link => {
-          const cyclePhotons = link.__photonsObj && link.__photonsObj.children;
-          const singleHopPhotons = link.__singleHopPhotonsObj && link.__singleHopPhotonsObj.children;
+        state.graph.forEachEdge((key, attributes) => {
+          const edge = { key, attributes };
+          const cyclePhotons = edge.attributes.__photonsObj && edge.attributes.__photonsObj.children;
+          const singleHopPhotons = edge.attributes.__singleHopPhotonsObj && edge.attributes.__singleHopPhotonsObj.children;
 
           if ((!singleHopPhotons || !singleHopPhotons.length) && (!cyclePhotons || !cyclePhotons.length)) return;
 
-          const pos = isD3Sim
-            ? link
-            : state.layout.getLinkPosition(state.layout.graph.getLink(link.source, link.target).id);
-          const start = pos[isD3Sim ? 'source' : 'from'];
-          const end = pos[isD3Sim ? 'target' : 'to'];
+          const pos = state.layout.getEdgePosition(edge.key);
+          const start = pos['from'];
+          const end = pos['to'];
 
           if (!start || !end || !start.hasOwnProperty('x') || !end.hasOwnProperty('x')) return; // skip invalid link
 
-          const particleSpeed = particleSpeedAccessor(link);
+          const particleSpeed = particleSpeedAccessor(edge);
 
-          const getPhotonPos = link.__curve
-            ? t => link.__curve.getPoint(t) // interpolate along bezier curve
+          const getPhotonPos = edge.attributes.__curve
+            ? t => edge.attributes.__curve.getPoint(t) // interpolate along bezier curve
             : t => {
               // straight line: interpolate linearly
               const iplt = (dim, start, end, t) => start[dim] + (end[dim] - start[dim]) * t || 0;
@@ -523,34 +676,17 @@ export default Kapsule({
         });
       }
     },
-    emitParticle: function(state, link) {
-      if (link && state.graphData.links.includes(link)) {
-        if (!link.__singleHopPhotonsObj) {
-          const obj = new three.Group();
-          obj.__linkThreeObjType = 'singleHopPhotons';
-          link.__singleHopPhotonsObj = obj;
-
-          state.graphScene.add(obj);
-        }
-
-        const particleWidthAccessor = accessorFn(state.linkDirectionalParticleWidth);
-        const photonR = Math.ceil(particleWidthAccessor(link) * 10) / 10 / 2;
-        const numSegments = state.linkDirectionalParticleResolution;
-        const particleGeometry = new three.SphereGeometry(photonR, numSegments, numSegments);
-
-        const linkColorAccessor = accessorFn(state.linkColor);
-        const particleColorAccessor = accessorFn(state.linkDirectionalParticleColor);
-        const photonColor = particleColorAccessor(link) || linkColorAccessor(link) || '#f0f0f0';
-        const materialColor = new three.Color(colorStr2Hex(photonColor));
-        const opacity = state.linkOpacity * 3;
-        const particleMaterial = new three.MeshLambertMaterial({
-          color: materialColor,
-          transparent: true,
-          opacity
-        });
-
-        // add a single hop particle
-        link.__singleHopPhotonsObj.add(new three.Mesh(particleGeometry, particleMaterial));
+    emitParticle: function(state, edge) {
+      if (edge.key && state.graph.hasEdge(edge.key)) {
+        const singleHopPhotons = createBaseThreePhotons();
+        singleHopPhotons.geometry = createThreePhotonsGeometry(state, edge, singleHopPhotons);
+        singleHopPhotons.material = createThreePhotonsMaterial(state, edge, singleHopPhotons);
+        singleHopPhotons.__linkThreeObjType = 'singleHopPhotons';
+        singleHopPhotons.__data = edge.attributes;
+        singleHopPhotons.__key = edge.key;
+        singleHopPhotons.add(new Mesh(singleHopPhotons.geometry, singleHopPhotons.material));
+        edge.attributes.__singleHopPhotonsObj = singleHopPhotons;
+        state.graphScene.add(singleHopPhotons);
       }
 
       return this;
@@ -564,13 +700,13 @@ export default Kapsule({
 
         if (obj.geometry) {
           obj.geometry.computeBoundingBox();
-          const box = new three.Box3();
+          const box = new Box3();
           box.copy(obj.geometry.boundingBox).applyMatrix4(obj.matrixWorld);
           bboxes.push(box);
         }
         return bboxes.concat(...(obj.children || [])
           .filter(obj => !obj.hasOwnProperty('__graphObjType') ||
-            (obj.__graphObjType === 'node' && nodeFilter(obj.__data)) // exclude filtered out nodes
+            (obj.__graphObjType === 'node' && nodeFilter(obj.__key, obj.__data)) // exclude filtered out nodes
           )
           .map(getBboxes));
       })(state.graphScene);
@@ -584,535 +720,267 @@ export default Kapsule({
           d3Max(bboxes, bb => bb.max[c])
         ]
       })));
-    }
+    },
+    setGraphListeners: function(state) {
+      console.log("Setting forcegraph-kapsule graph listeners...");
+      const listenersMap = {
+        "nodeAdded": this.nodeAdded,
+        "edgeAdded": this.edgeAdded,
+        "nodeAttributesUpdated": this.nodeAttributesUpdated,
+        "edgeAttributesUpdated": this.edgeAttributesUpdated,
+        "nodeDropped": this.nodeDropped,
+        "edgeDropped": this.edgeDropped,
+        "cleared": this.cleared
+      }
+      Object.entries(listenersMap).forEach(([eventName, listener]) => {
+        state.graph.on(eventName, listener);
+      });
+      console.log("Number of nodeAdded listeners: ", state.graph.listeners("nodeAdded").length);
+    },
+    removeGraphListeners: function(state) {
+      console.log("Removing forcegraph-kapsule graph listeners...");
+      const listenersMap = {
+        "nodeAdded": this.nodeAdded,
+        "edgeAdded": this.edgeAdded,
+        "nodeAttributesUpdated": this.nodeAttributesUpdated,
+        "edgeAttributesUpdated": this.edgeAttributesUpdated,
+        "nodeDropped": this.nodeDropped,
+        "edgeDropped": this.edgeDropped,
+        "cleared": this.cleared
+      }
+      Object.entries(listenersMap).forEach(([eventName, listener]) => {
+        state.graph.removeAllListeners(eventName);
+      });
+      console.log("Number of nodeAdded listeners: ", state.graph.listeners("nodeAdded").length);
+    },
+    // New Below
+    zoomToFit: function(state, transitionDuration, padding, ...bboxArgs) {
+      state.renderObjs.fitToBbox(
+        this.getGraphBbox(...bboxArgs),
+        transitionDuration,
+        padding
+      );
+      return this;
+    },
+    pauseAnimation: function(state) {
+      if (state.animationFrameRequestId !== null) {
+        cancelAnimationFrame(state.animationFrameRequestId);
+        state.animationFrameRequestId = null;
+      }
+      return this;
+    },
+    resumeAnimation: function(state) {
+      if (state.animationFrameRequestId === null) {
+        this._animationCycle();
+      }
+      return this;
+    },
+    _animationCycle(state) {
+      stats.update();
+      if (state.enablePointerInteraction) {
+        // reset canvas cursor (override dragControls cursor)
+        this.renderer().domElement.style.cursor = null;
+      }
+  
+      // Frame cycle
+      this.tickFrame();
+      state.renderObjs.tick();
+      state.animationFrameRequestId = requestAnimationFrame(this._animationCycle);
+    },
+    scene: state => state.renderObjs.scene(), // Expose scene
+    camera: state => state.renderObjs.camera(), // Expose camera
+    renderer: state => state.renderObjs.renderer(), // Expose renderer
+    controls: state => state.renderObjs.controls(), // Expose controls
+    _destructor: function() {
+      this.pauseAnimation();
+      this.graph(new MultiDirectedGraph());
+    },
+    ...linkedRenderObjsMethods
   },
 
-  stateInit: () => ({
-    d3ForceLayout: d3ForceSimulation()
-      .force('link', d3ForceLink())
-      .force('charge', d3ForceManyBody())
-      .force('center', d3ForceCenter())
-      .force('dagRadial', null)
-      .stop(),
-    engineRunning: false
+  stateInit: ({ controlType, rendererConfig, extraRenderers, useWebGPU }) => ({
+    engineRunning: false,
+    sphereGeometries: {}, // indexed by nodeVal and nodeResolution
+    sphereMaterials: {}, // indexed by color and nodeOpacity
+    cylinderGeometries: {}, // indexed by linkWidth and linkResolution
+    lambertLineMaterials: {}, // indexed by color and linkOpacity
+    basicLineMaterials: {}, // indexed by color and linkOpacity
+    particleGeometries: {}, // indexed by particleWidth
+    particleMaterials: {}, // indexed by linkColor
+    controlType,
+    rendererConfig,
+    extraRenderers,
+    renderObjs: ThreeRenderObjects({ controlType, rendererConfig, extraRenderers, useWebGPU })
+    .lights([
+      new AmbientLight(0xcccccc, Math.PI),
+      new DirectionalLight(0xffffff, 0.6 * Math.PI)
+    ]),
+    infoElem: document.createElement('div')
   }),
 
-  init(threeObj, state) {
+  init(domNode, state) {
+    state.graph = state.graph();
     // Main three object to manipulate
-    state.graphScene = threeObj;
+    state.graphScene = new Group();
+    state.renderObjs.objects([state.graphScene]);
+    
+    this.setGraphListeners();
+
+    // Create forcelayout once
+    state.layout = createlayout(state.graph, { dimensions: state.numDimensions, ...state.ngraphPhysics });
+
+    // ---New Below---
+
+    // Wipe DOM
+    domNode.innerHTML = '';
+
+    // Add relative container
+    domNode.appendChild(state.container = document.createElement('div'));
+    state.container.style.position = 'relative';
+
+    // Add renderObjs
+    const roDomNode = document.createElement('div');
+    state.container.appendChild(roDomNode);
+    state.renderObjs(roDomNode);
+    const camera = state.renderObjs.camera();
+    const renderer = state.renderObjs.renderer();
+    const controls = state.renderObjs.controls();
+    controls.enabled = !!state.enableNavigationControls;
+    state.lastSetCameraZ = camera.position.z;
+
+    // Add info space
+    state.container.appendChild(state.infoElem);
+    state.infoElem.className = 'graph-info-msg';
+    state.infoElem.textContent = '';
+
+    // Add stats
+    stats = new Stats();
+    document.body.appendChild(stats.domElement);
+    
+    state.renderObjs
+      .hoverOrderComparator((a, b) => {
+        // Prioritize graph objects
+        const aObj = getGraphObj(a);
+        if (!aObj) return 1;
+        const bObj = getGraphObj(b);
+        if (!bObj) return -1;
+
+        // Prioritize nodes over links
+        const isNode = o => o.__graphObjType === 'node';
+        return isNode(bObj) - isNode(aObj);
+      })
+      .tooltipContent(obj => {
+        const graphObj = getGraphObj(obj);
+        return graphObj ? accessorFn(state[`${graphObj.__graphObjType}Label`])(graphObj.__data) || '' : '';
+      })
+      .hoverDuringDrag(false)
+      .onHover(obj => {
+        // Update tooltip and trigger onHover events
+        const hoverObj = getGraphObj(obj);
+
+        if (hoverObj !== state.hoverObj) {
+          const prevObjType = state.hoverObj ? state.hoverObj.__graphObjType : null;
+          const prevObjData = state.hoverObj ? state.hoverObj.__data : null;
+          const objType = hoverObj ? hoverObj.__graphObjType : null;
+          const objData = hoverObj ? hoverObj.__data : null;
+          if (prevObjType && prevObjType !== objType) {
+            // Hover out
+            const fn = state[`on${prevObjType === 'node' ? 'Node' : 'Link'}Hover`];
+            fn && fn(null, prevObjData);
+          }
+          if (objType) {
+            // Hover in
+            const fn = state[`on${objType === 'node' ? 'Node' : 'Link'}Hover`];
+            fn && fn(objData, prevObjType === objType ? prevObjData : null);
+          }
+
+          // set pointer if hovered object is clickable
+          renderer.domElement.classList[
+            ((hoverObj && state[`on${objType === 'node' ? 'Node' : 'Link'}Click`]) || (!hoverObj && state.onBackgroundClick)) ? 'add' : 'remove'
+          ]('clickable');
+
+          state.hoverObj = hoverObj;
+        }
+      })
+      .clickAfterDrag(false)
+      .onClick((obj, ev) => {
+        const graphObj = getGraphObj(obj);
+        if (graphObj) {
+          const fn = state[`on${graphObj.__graphObjType === 'node' ? 'Node' : 'Link'}Click`];
+          fn && fn(graphObj.__data, ev);
+        } else {
+          state.onBackgroundClick && state.onBackgroundClick(ev);
+        }
+      })
+      .onRightClick((obj, ev) => {
+        // Handle right-click events
+        const graphObj = getGraphObj(obj);
+        if (graphObj) {
+          const fn = state[`on${graphObj.__graphObjType === 'node' ? 'Node' : 'Link'}RightClick`];
+          fn && fn(graphObj.__data, ev);
+        } else {
+          state.onBackgroundRightClick && state.onBackgroundRightClick(ev);
+        }
+      });
+      
+    // Kick-off renderer
+    this._animationCycle();
   },
 
   update(state, changedProps) {
+    state.engineRunning = false; // pause simulation
+    state.onUpdate(state);
+
     const hasAnyPropChanged = propList => propList.some(p => changedProps.hasOwnProperty(p));
 
-    state.engineRunning = false; // pause simulation
-    state.onUpdate();
+    state.graph.forEachNode((key, attributes) => {
+      refreshNode(state, changedProps, {key, attributes});
+    });
+    state.graph.forEachEdge((key, attributes, source, target, srcAttrs, tgtAttrs, directed) => {
+      refreshEdge(state, changedProps, {key, attributes, source, target, directed});
+    });
 
-    if (state.nodeAutoColorBy !== null && hasAnyPropChanged(['nodeAutoColorBy', 'graphData', 'nodeColor'])) {
-      // Auto add color to uncolored nodes
-      autoColorObjects(state.graphData.nodes, accessorFn(state.nodeAutoColorBy), state.nodeColor);
-    }
-    if (state.linkAutoColorBy !== null && hasAnyPropChanged(['linkAutoColorBy', 'graphData', 'linkColor'])) {
-      // Auto add color to uncolored links
-      autoColorObjects(state.graphData.links, accessorFn(state.linkAutoColorBy), state.linkColor);
-    }
-
-    // Digest nodes WebGL objects
-    if (state._flushObjects || hasAnyPropChanged([
-      'graphData',
-      'nodeThreeObject',
-      'nodeThreeObjectExtend',
-      'nodeVal',
-      'nodeColor',
-      'nodeVisibility',
-      'nodeRelSize',
-      'nodeResolution',
-      'nodeOpacity'
-    ])) {
-      const customObjectAccessor = accessorFn(state.nodeThreeObject);
-      const customObjectExtendAccessor = accessorFn(state.nodeThreeObjectExtend);
-      const valAccessor = accessorFn(state.nodeVal);
-      const colorAccessor = accessorFn(state.nodeColor);
-      const visibilityAccessor = accessorFn(state.nodeVisibility);
-
-      const sphereGeometries = {}; // indexed by node value
-      const sphereMaterials = {}; // indexed by color
-
-      threeDigest(
-        state.graphData.nodes.filter(visibilityAccessor),
-        state.graphScene,
-        {
-          purge: state._flushObjects || hasAnyPropChanged([
-            // recreate objects if any of these props have changed
-            'nodeThreeObject',
-            'nodeThreeObjectExtend'
-          ]),
-          objFilter: obj => obj.__graphObjType === 'node',
-          createObj: node => {
-            let customObj = customObjectAccessor(node);
-            const extendObj = customObjectExtendAccessor(node);
-
-            if (customObj && state.nodeThreeObject === customObj) {
-              // clone object if it's a shared object among all nodes
-              customObj = customObj.clone();
-            }
-
-            let obj;
-
-            if (customObj && !extendObj) {
-              obj = customObj;
-            } else { // Add default object (sphere mesh)
-              obj = new three.Mesh();
-              obj.__graphDefaultObj = true;
-
-              if (customObj && extendObj) {
-                obj.add(customObj); // extend default with custom
-              }
-            }
-
-            obj.__graphObjType = 'node'; // Add object type
-
-            return obj;
-          },
-          updateObj: (obj, node) => {
-            if (obj.__graphDefaultObj) { // bypass internal updates for custom node objects
-              const val = valAccessor(node) || 1;
-              const radius = Math.cbrt(val) * state.nodeRelSize;
-              const numSegments = state.nodeResolution;
-
-              if (!obj.geometry.type.match(/^Sphere(Buffer)?Geometry$/)
-                || obj.geometry.parameters.radius !== radius
-                || obj.geometry.parameters.widthSegments !== numSegments
-              ) {
-                if (!sphereGeometries.hasOwnProperty(val)) {
-                  sphereGeometries[val] = new three.SphereGeometry(radius, numSegments, numSegments);
-                }
-
-                obj.geometry.dispose();
-                obj.geometry = sphereGeometries[val];
-              }
-
-              const color = colorAccessor(node);
-              const materialColor = new three.Color(colorStr2Hex(color || '#ffffaa'));
-              const opacity = state.nodeOpacity * colorAlpha(color);
-
-              if (obj.material.type !== 'MeshLambertMaterial'
-                || !obj.material.color.equals(materialColor)
-                || obj.material.opacity !== opacity
-              ) {
-                if (!sphereMaterials.hasOwnProperty(color)) {
-                  sphereMaterials[color] = new three.MeshLambertMaterial({
-                    color: materialColor,
-                    transparent: true,
-                    opacity
-                  });
-                }
-
-                obj.material.dispose();
-                obj.material = sphereMaterials[color];
-              }
-            }
-          }
-        }
-      );
-    }
-
-    // Digest links WebGL objects
-    if (state._flushObjects || hasAnyPropChanged([
-      'graphData',
-      'linkThreeObject',
-      'linkThreeObjectExtend',
-      'linkMaterial',
-      'linkColor',
-      'linkWidth',
-      'linkVisibility',
-      'linkResolution',
-      'linkOpacity',
-      'linkDirectionalArrowLength',
-      'linkDirectionalArrowColor',
-      'linkDirectionalArrowResolution',
-      'linkDirectionalParticles',
-      'linkDirectionalParticleWidth',
-      'linkDirectionalParticleColor',
-      'linkDirectionalParticleResolution'
-    ])) {
-      const customObjectAccessor = accessorFn(state.linkThreeObject);
-      const customObjectExtendAccessor = accessorFn(state.linkThreeObjectExtend);
-      const customMaterialAccessor = accessorFn(state.linkMaterial);
-      const visibilityAccessor = accessorFn(state.linkVisibility);
-      const colorAccessor = accessorFn(state.linkColor);
-      const widthAccessor = accessorFn(state.linkWidth);
-
-      const cylinderGeometries = {}; // indexed by link width
-      const lambertLineMaterials = {}; // for cylinder objects, indexed by link color
-      const basicLineMaterials = {}; // for line objects, indexed by link color
-
-      const visibleLinks = state.graphData.links.filter(visibilityAccessor);
-
-      // lines digest cycle
-      threeDigest(
-        visibleLinks,
-        state.graphScene,
-        {
-          objBindAttr: '__lineObj',
-          purge: state._flushObjects || hasAnyPropChanged([
-            // recreate objects if any of these props have changed
-            'linkThreeObject',
-            'linkThreeObjectExtend',
-            'linkWidth'
-          ]),
-          objFilter: obj => obj.__graphObjType === 'link',
-          exitObj: obj => {
-            // remove trailing single photons
-            const singlePhotonsObj = obj.__data && obj.__data.__singleHopPhotonsObj;
-            if (singlePhotonsObj) {
-              singlePhotonsObj.parent.remove(singlePhotonsObj);
-              emptyObject(singlePhotonsObj);
-              delete obj.__data.__singleHopPhotonsObj;
-            }
-          },
-          createObj: link => {
-            let customObj = customObjectAccessor(link);
-            const extendObj = customObjectExtendAccessor(link);
-
-            if (customObj && state.linkThreeObject === customObj) {
-              // clone object if it's a shared object among all links
-              customObj = customObj.clone();
-            }
-
-            let defaultObj;
-            if (!customObj || extendObj) {
-              // construct default line obj
-              const useCylinder = !!widthAccessor(link);
-
-              if (useCylinder) {
-                defaultObj = new three.Mesh();
-              } else { // Use plain line (constant width)
-                const lineGeometry = new three.BufferGeometry();
-                lineGeometry[setAttributeFn]('position', new three.BufferAttribute(new Float32Array(2 * 3), 3));
-
-                defaultObj = new three.Line(lineGeometry);
-              }
-            }
-
-            let obj;
-            if (!customObj) {
-              obj = defaultObj;
-              obj.__graphDefaultObj = true;
-            } else {
-              if (!extendObj) {
-                // use custom object
-                obj = customObj;
-              } else {
-                // extend default with custom in a group
-                obj = new three.Group();
-                obj.__graphDefaultObj = true;
-
-                obj.add(defaultObj);
-                obj.add(customObj);
-              }
-            }
-
-            obj.renderOrder = 10; // Prevent visual glitches of dark lines on top of nodes by rendering them last
-
-            obj.__graphObjType = 'link'; // Add object type
-
-            return obj;
-          },
-          updateObj: (updObj, link) => {
-            if (updObj.__graphDefaultObj) { // bypass internal updates for custom link objects
-              // select default object if it's an extended group
-              const obj = updObj.children.length ? updObj.children[0] : updObj;
-
-              const linkWidth = Math.ceil(widthAccessor(link) * 10) / 10;
-
-              const useCylinder = !!linkWidth;
-
-              if (useCylinder) {
-                const r = linkWidth / 2;
-                const numSegments = state.linkResolution;
-
-                if (!obj.geometry.type.match(/^Cylinder(Buffer)?Geometry$/)
-                  || obj.geometry.parameters.radiusTop !== r
-                  || obj.geometry.parameters.radialSegments !== numSegments
-                ) {
-                  if (!cylinderGeometries.hasOwnProperty(linkWidth)) {
-                    const geometry = new three.CylinderGeometry(r, r, 1, numSegments, 1, false);
-                    geometry[applyMatrix4Fn](new three.Matrix4().makeTranslation(0, 1 / 2, 0));
-                    geometry[applyMatrix4Fn](new three.Matrix4().makeRotationX(Math.PI / 2));
-                    cylinderGeometries[linkWidth] = geometry;
-                  }
-
-                  obj.geometry.dispose();
-                  obj.geometry = cylinderGeometries[linkWidth];
-                }
-              }
-
-              const customMaterial = customMaterialAccessor(link);
-              if (customMaterial) {
-                obj.material = customMaterial;
-              } else {
-                const color = colorAccessor(link);
-                const materialColor = new three.Color(colorStr2Hex(color || '#f0f0f0'));
-                const opacity = state.linkOpacity * colorAlpha(color);
-
-                const materialType = useCylinder ? 'MeshLambertMaterial' : 'LineBasicMaterial';
-                if (obj.material.type !== materialType
-                  || !obj.material.color.equals(materialColor)
-                  || obj.material.opacity !== opacity
-                ) {
-                  const lineMaterials = useCylinder ? lambertLineMaterials : basicLineMaterials;
-                  if (!lineMaterials.hasOwnProperty(color)) {
-                    lineMaterials[color] = new three[materialType]({
-                      color: materialColor,
-                      transparent: opacity < 1,
-                      opacity,
-                      depthWrite: opacity >= 1 // Prevent transparency issues
-                    });
-                  }
-
-                  obj.material.dispose();
-                  obj.material = lineMaterials[color];
-                }
-              }
-            }
-          }
-        }
-      );
-
-      // Arrows digest cycle
-      if (state.linkDirectionalArrowLength || changedProps.hasOwnProperty('linkDirectionalArrowLength')) {
-        const arrowLengthAccessor = accessorFn(state.linkDirectionalArrowLength);
-        const arrowColorAccessor = accessorFn(state.linkDirectionalArrowColor);
-
-        threeDigest(
-          visibleLinks.filter(arrowLengthAccessor),
-          state.graphScene,
-          {
-            objBindAttr: '__arrowObj',
-            objFilter: obj => obj.__linkThreeObjType === 'arrow',
-            createObj: () => {
-              const obj = new three.Mesh(undefined, new three.MeshLambertMaterial({ transparent: true }));
-              obj.__linkThreeObjType = 'arrow'; // Add object type
-
-              return obj;
-            },
-            updateObj: (obj, link) => {
-              const arrowLength = arrowLengthAccessor(link);
-              const numSegments = state.linkDirectionalArrowResolution;
-
-              if (!obj.geometry.type.match(/^Cone(Buffer)?Geometry$/)
-                || obj.geometry.parameters.height !== arrowLength
-                || obj.geometry.parameters.radialSegments !== numSegments
-              ) {
-                const coneGeometry = new three.ConeGeometry(arrowLength * 0.25, arrowLength, numSegments);
-                // Correct orientation
-                coneGeometry.translate(0, arrowLength / 2, 0);
-                coneGeometry.rotateX(Math.PI / 2);
-
-                obj.geometry.dispose();
-                obj.geometry = coneGeometry;
-              }
-
-              const arrowColor = arrowColorAccessor(link) || colorAccessor(link) || '#f0f0f0';
-              obj.material.color = new three.Color(colorStr2Hex(arrowColor));
-              obj.material.opacity = state.linkOpacity * 3 * colorAlpha(arrowColor);
-            }
-          }
-        );
-      }
-
-      // Photon particles digest cycle
-      if (state.linkDirectionalParticles || changedProps.hasOwnProperty('linkDirectionalParticles')) {
-        const particlesAccessor = accessorFn(state.linkDirectionalParticles);
-        const particleWidthAccessor = accessorFn(state.linkDirectionalParticleWidth);
-        const particleColorAccessor = accessorFn(state.linkDirectionalParticleColor);
-
-        const particleMaterials = {}; // indexed by link color
-        const particleGeometries = {}; // indexed by particle width
-
-        threeDigest(
-          visibleLinks.filter(particlesAccessor),
-          state.graphScene,
-          {
-            objBindAttr: '__photonsObj',
-            objFilter: obj => obj.__linkThreeObjType === 'photons',
-            createObj: () => {
-              const obj = new three.Group();
-              obj.__linkThreeObjType = 'photons'; // Add object type
-
-              return obj;
-            },
-            updateObj: (obj, link) => {
-              const numPhotons = Math.round(Math.abs(particlesAccessor(link)));
-
-              const curPhoton = !!obj.children.length && obj.children[0];
-
-              const photonR = Math.ceil(particleWidthAccessor(link) * 10) / 10 / 2;
-              const numSegments = state.linkDirectionalParticleResolution;
-
-              let particleGeometry;
-              if (curPhoton
-                && curPhoton.geometry.parameters.radius === photonR
-                && curPhoton.geometry.parameters.widthSegments === numSegments) {
-                particleGeometry = curPhoton.geometry;
-              } else {
-                if (!particleGeometries.hasOwnProperty(photonR)) {
-                  particleGeometries[photonR] = new three.SphereGeometry(photonR, numSegments, numSegments);
-                }
-                particleGeometry = particleGeometries[photonR];
-
-                curPhoton && curPhoton.geometry.dispose();
-              }
-
-              const photonColor = particleColorAccessor(link) || colorAccessor(link) || '#f0f0f0';
-              const materialColor = new three.Color(colorStr2Hex(photonColor));
-              const opacity = state.linkOpacity * 3;
-
-              let particleMaterial;
-              if (curPhoton
-                && curPhoton.material.color.equals(materialColor)
-                && curPhoton.material.opacity === opacity
-              ) {
-                particleMaterial = curPhoton.material;
-              } else {
-                if (!particleMaterials.hasOwnProperty(photonColor)) {
-                  particleMaterials[photonColor] = new three.MeshLambertMaterial({
-                    color: materialColor,
-                    transparent: true,
-                    opacity
-                  });
-                }
-                particleMaterial = particleMaterials[photonColor];
-
-                curPhoton && curPhoton.material.dispose();
-              }
-
-              // digest cycle for each photon
-              threeDigest(
-                [...new Array(numPhotons)].map((_, idx) => ({idx})),
-                obj,
-                {
-                  idAccessor: d => d.idx,
-                  createObj: () => new three.Mesh(particleGeometry, particleMaterial),
-                  updateObj: obj => {
-                    obj.geometry = particleGeometry;
-                    obj.material = particleMaterial;
-                  }
-                }
-              );
-            }
-          }
-        );
-      }
+    if (state._flushObjects) {
+      state.sphereGeometries = {};
+      state.sphereMaterials = {};
+      state.cylinderGeometries = {};
+      state.lambertLineMaterials = {};
+      state.basicLineMaterials = {};
+      state.particleGeometries = {}; 
+      state.particleMaterials = {};
     }
 
     state._flushObjects = false; // reset objects refresh flag
 
     // simulation engine
     if (hasAnyPropChanged([
-      'graphData',
+      'graph',
       'nodeId',
       'linkSource',
       'linkTarget',
       'numDimensions',
-      'forceEngine',
-      'dagMode',
-      'dagNodeFilter',
-      'dagLevelDistance'
+      'forceEngine'
     ])) {
       state.engineRunning = false; // Pause simulation
 
-      // parse links
-      state.graphData.links.forEach(link => {
-        link.source = link[state.linkSource];
-        link.target = link[state.linkTarget];
-      });
-
-      // Feed data to force-directed layout
-      const isD3Sim = state.forceEngine !== 'ngraph';
-      let layout;
-      if (isD3Sim) {
-        // D3-force
-        (layout = state.d3ForceLayout)
-          .stop()
-          .alpha(1)// re-heat the simulation
-          .numDimensions(state.numDimensions)
-          .nodes(state.graphData.nodes);
-
-        // add links (if link force is still active)
-        const linkForce = state.d3ForceLayout.force('link');
-        if (linkForce) {
-          linkForce
-            .id(d => d[state.nodeId])
-            .links(state.graphData.links);
-        }
-
-        // setup dag force constraints
-        const nodeDepths = state.dagMode && getDagDepths(
-          state.graphData,
-          node => node[state.nodeId],
-          {
-            nodeFilter: state.dagNodeFilter,
-            onLoopError: state.onDagError || undefined
-          }
-        );
-        const maxDepth = Math.max(...Object.values(nodeDepths || []));
-        const dagLevelDistance = state.dagLevelDistance || (
-          state.graphData.nodes.length / (maxDepth || 1) * DAG_LEVEL_NODE_RATIO
-          * (['radialin', 'radialout'].indexOf(state.dagMode) !== -1 ? 0.7 : 1)
-        );
-
-        // Fix nodes to x,y,z for dag mode
-        if (state.dagMode) {
-          const getFFn = (fix, invert) => node => !fix
-            ? undefined
-            : (nodeDepths[node[state.nodeId]] - maxDepth / 2) * dagLevelDistance * (invert ? -1 : 1);
-
-          const fxFn = getFFn(['lr', 'rl'].indexOf(state.dagMode) !== -1, state.dagMode === 'rl');
-          const fyFn = getFFn(['td', 'bu'].indexOf(state.dagMode) !== -1, state.dagMode === 'td');
-          const fzFn = getFFn(['zin', 'zout'].indexOf(state.dagMode) !== -1, state.dagMode === 'zout');
-
-          state.graphData.nodes.filter(state.dagNodeFilter).forEach(node => {
-            node.fx = fxFn(node);
-            node.fy = fyFn(node);
-            node.fz = fzFn(node);
-          });
-        }
-
-        // Use radial force for radial dags
-        state.d3ForceLayout.force('dagRadial',
-          ['radialin', 'radialout'].indexOf(state.dagMode) !== -1
-            ? d3ForceRadial(node => {
-                const nodeDepth = nodeDepths[node[state.nodeId]] || -1;
-                return (state.dagMode === 'radialin' ? maxDepth - nodeDepth : nodeDepth) * dagLevelDistance;
-              })
-              .strength(node => state.dagNodeFilter(node) ? 1 : 0)
-            : null
-        );
-      } else {
-        // ngraph
-        const graph = ngraph.graph();
-        state.graphData.nodes.forEach(node => { graph.addNode(node[state.nodeId]); });
-        state.graphData.links.forEach(link => { graph.addLink(link.source, link.target); });
-        layout = ngraph.forcelayout(graph, { dimensions: state.numDimensions, ...state.ngraphPhysics });
-        layout.graph = graph; // Attach graph reference to layout
-      }
-
-      for (
-        let i = 0;
-        i < state.warmupTicks && !(isD3Sim && state.d3AlphaMin > 0 && state.d3ForceLayout.alpha() < state.d3AlphaMin);
-        i++
-      ) {
-        layout[isD3Sim ? "tick" : "step"]();
+      for (let i = 0; i < state.warmupTicks; i++) {
+        if (state.layout.step()) break; // layout['step']()???
       } // Initial ticks before starting to render
 
-      state.layout = layout;
       this.resetCountdown();
     }
 
     state.engineRunning = true; // resume simulation
 
-    state.onFinishUpdate();
+    state.onFinishUpdate(state);
   }
 });
+
+function getGraphObj(object) {
+  let obj = object;
+  // recurse up object chain until finding the graph object
+  while (obj && !obj.hasOwnProperty('__graphObjType')) {
+    obj = obj.parent;
+  }
+  return obj;
+}
